@@ -1,0 +1,1597 @@
+commit aa83b66a83ba656f30f6e8f2ac2807ea54c5832d
+Author: Michael Orlov <morlovmr@gmail.com>
+Date:   Thu Jan 22 23:16:25 2026 -0800
+
+    Add "--max-cache-duration" option to the Recorder to facilitate the time bounded snapshot feature (#2289)
+    
+    * Initial implementation for the time bounded snapshot
+    
+    - Added the "--snapshot-duration" CLI option. Default value 0 indicates
+    that the snapshot will be limited by the --max-cache-size parameter
+    only. If the value is more than 0, the cyclic buffer for the snapshot
+    will be limited by both the series of messages duration and the maximum
+    cache size parameter.
+    - To override the upper bound by total messages size, the
+    "--maximum-cache-size" CLI option can be settled to 0.
+    
+    Signed-off-by: Michael Orlov <morlovmr@gmail.com>
+    
+    * Regenerate Python stub files (.pyi)
+    
+    Signed-off-by: Michael Orlov <morlovmr@gmail.com>
+    
+    * Bugfix for failing tests
+    
+    Signed-off-by: Michael Orlov <morlovmr@gmail.com>
+    
+    * Rename snapshot_duration_ms to the snapshot_duration
+    
+    Signed-off-by: Michael Orlov <morlovmr@gmail.com>
+    
+    * Change type for snapshot_duration to the rclcpp::Duration
+    
+    Signed-off-by: Michael Orlov <morlovmr@gmail.com>
+    
+    * Add snapshot_duration handling in composable recorder and player nodes
+    
+    Signed-off-by: Michael Orlov <morlovmr@gmail.com>
+    
+    * Address review comments 1
+    
+    Signed-off-by: Michael Orlov <morlovmr@gmail.com>
+    
+    * Add max buffer duration to the MessageCacheBuffer
+    
+    - Add ability to limit MessageCacheBuffer by duration in addition to
+     the limit by the buffer size.
+    
+    Signed-off-by: Michael Orlov <morlovmr@gmail.com>
+    
+    * Rename snapshot_duration to the max_cache_duration
+    
+    Signed-off-by: Michael Orlov <morlovmr@gmail.com>
+    
+    * Move `max_cache_duration` to be right after the `max_cache_size`
+    
+    Signed-off-by: Michael Orlov <morlovmr@gmail.com>
+    
+    * Update README.md with "Time-limited buffering with --max-cache-duration"
+    
+    Signed-off-by: Michael Orlov <morlovmr@gmail.com>
+    
+    * Change max_cache_duration type to `uint32_t`
+    
+    - Rationale:
+    1. On practice there are no value to have cache in a fraction of seconds
+     we can always limit by size as well.
+    2. It is much easier to operate with a plain integer type rather than
+     rclcpp::Duration.
+    3. It would be good to avoid dependencies from the rclcpp layer in the
+     StorageOptions data struct.
+    
+    Signed-off-by: Michael Orlov <morlovmr@gmail.com>
+    
+    * Bugfix in circular buffer for dropping messages exceeding buffer size
+    
+    Signed-off-by: Michael Orlov <morlovmr@gmail.com>
+    
+    * Bugfix for incorrect back/front usage in buffer duration calculation
+    
+    Signed-off-by: Michael Orlov <morlovmr@gmail.com>
+    
+    * Add unit tests
+    
+    Signed-off-by: Michael Orlov <morlovmr@gmail.com>
+    
+    * Remove tests for circular cache buffer in favor of the circular cache
+    
+    Signed-off-by: Michael Orlov <morlovmr@gmail.com>
+    
+    * Correctly handle null and empty messages in the MessageCache
+    
+    Signed-off-by: Michael Orlov <morlovmr@gmail.com>
+    
+    * Address ament_flake8 warnings
+    
+    Signed-off-by: Michael Orlov <morlovmr@gmail.com>
+    
+    * Address review comments
+    
+    Signed-off-by: Michael Orlov <morlovmr@gmail.com>
+    
+    * Adjust expectations in `handles_out_of_order_timestamps_gracefully`
+    
+    Signed-off-by: Michael Orlov <morlovmr@gmail.com>
+    
+    * Address review comments in tests
+    
+    - Verify we kept the newest messages (last 1-second window)
+    
+    Signed-off-by: Michael Orlov <morlovmr@gmail.com>
+    
+    * Address grammar in comments
+    
+    Signed-off-by: Michael Orlov <morlovmr@gmail.com>
+    
+    ---------
+    
+    Signed-off-by: Michael Orlov <morlovmr@gmail.com>
+    Co-authored-by: Michael Orlov <michael.orlov@apex.ai>
+
+diff --git a/README.md b/README.md
+index c8662f5f..d2b47fc8 100644
+--- a/README.md
++++ b/README.md
+@@ -146,10 +146,68 @@ These services enable full remote control of the recording process, allowing you
+ 
+ #### Snapshot mode
+ 
+-The Recorder provides a "snapshot mode", enabled via `--snapshot-mode` or `StorageOptions.snapshot_mode`, which does not write messages to disk as they come in, but instead keeps an in-memory circular buffer of size `--max-cache-size`.
+-This entire buffer can be dumped to disk on request, saving data only in specified circumstances such as a detected error condition or point of interest, capturing the "last N bytes" of incoming data, therefore making sure that you can trigger snapshot after the fact of the event.
++The Recorder provides a "snapshot mode", enabled via `--snapshot-mode` or
++`StorageOptions.snapshot_mode`. It does not write messages to disk as they arrive, but keeps an
++in-memory circular buffer bounded by `--max-cache-size` (bytes) and optionally
++`--max-cache-duration` (seconds). The entire buffer can be dumped to disk on request, saving data
++only in specified circumstances (e.g., a detected error condition or point of interest). This
++captures the "last N bytes" or "last T seconds" of incoming data, allowing you to trigger a
++snapshot after the event.
+ 
+-The snapshot is taken by calling the `~/snapshot` service on the recorder, described previously.
++The snapshot is taken by calling the `~/snapshot` service on the recorder, described previously.\
++Triggering a snapshot via CLI:
++
++```bash
++$ ros2 service call /rosbag2_recorder/snapshot rosbag2_interfaces/srv/Snapshot
++```
++
++#### Time-based snapshot and time-limited buffering with --max-cache-duration
++
++Rosbag2 supports generic time-limited buffering for both regular recording and snapshot mode:
++
++- `--max-cache-duration <seconds>`: Maximum cache duration window, in seconds.
++  - Default: `0` — buffer is limited only by `--max-cache-size`.
++  - If `> 0`: buffer is limited by both time and size:
++    - Time bound: retains only the most recent messages within the duration window.
++    - Size bound: respects `--max-cache-size` (bytes).
++
++Configuring bounds options:
++- Time-only buffer: set `--max-cache-size` to `0` and `--max-cache-duration` to a positive value.
++- Size-only buffer: set `--max-cache-duration` to `0` and `--max-cache-size` to a positive value.
++- Time-and-size bounded buffer: set both `--max-cache-size` and `--max-cache-duration` to a 
++  positive values.
++- In snapshot mode, at least one bound must be enabled.
++
++Double-buffering notes:
++- The cache uses double buffering. In pessimistic cases, memory usage can reach up to
++`2 × --max-cache-size`.
++- When time bounding is active:
++  - Snapshot mode: the recorded timespan corresponds to the current buffer window at snapshot 
++    trigger time. i.e., up to `--max-cache-duration` seconds.
++  - Non-snapshot (regular) mode: due to producer/consumer buffer swap and write cadence, the
++    effective observed timespan can be up to approximately `2 × --max-cache-duration` seconds.
++
++Examples:
++- Regular recording, time-only buffer (keep last 30 seconds in cache, regardless of size):
++  ```
++  $ ros2 bag record -a --max-cache-size 0 --max-cache-duration 30
++  ```
++- Snapshot mode, size-only buffer (keep last ~100 MB of recent messages):
++  ```
++  $ ros2 bag record -a --snapshot-mode --max-cache-size 100000000 --max-cache-duration 0
++  ```
++- Snapshot mode, time-and-size bounded (keep last 10 seconds, max 50 MB):
++  ```
++  $ ros2 bag record -a --snapshot-mode --max-cache-size 50000000 --max-cache-duration 10
++  ```
++- Snapshot mode, time-only buffer (keep last 7 seconds regardless of size):
++  ```
++  $ ros2 bag record -a --snapshot-mode --max-cache-size 0 --max-cache-duration 7
++  ```
++
++Operational behavior:
++- In snapshot mode, the file's start/end timestamps reflect the buffered messages at cache 
++  buffer swap time.
+ 
+ #### Statistics about lost messages
+ 
+@@ -533,7 +591,6 @@ def generate_launch_description():
+             ]
+         )
+     ])
+-}
+ ```
+ 
+ Here's an example YAML configuration for both composable player and recorder:
+@@ -646,10 +703,13 @@ pushd /my/bag/base_dir && ros2 bag record ...
+ In launch:
+ 
+ ```python
+-ExecuteProcess(
++import launch.actions
++
++launch.actions.ExecuteProcess(
+   cmd=['ros2', 'bag', 'record', ...],
+-  cwd=my_base_dir,
++  cwd='my_base_dir',
+ ),
++```
+ 
+ You can fully customize the output bag name, without any Rosbag2 special features.
+ 
+@@ -657,5 +717,5 @@ For example, you want a timestamp on the bag directory name, but want a custom p
+ 
+ ```bash
+ $ ros2 bag record -a -o mybag_"$(date +"%Y_%m_%d-%H_%M_%S")"
+-... creates e.g. mybag_2025_02_21-15_35_35
+ ```
++... creates e.g. mybag_2025_02_21-15_35_35
+diff --git a/ros2bag/ros2bag/verb/record.py b/ros2bag/ros2bag/verb/record.py
+index b2336711..23a2374d 100644
+--- a/ros2bag/ros2bag/verb/record.py
++++ b/ros2bag/ros2bag/verb/record.py
+@@ -167,6 +167,15 @@ def add_recorder_arguments(parser: ArgumentParser) -> None:
+              'is needed. A rule of thumb is to cache an order of magnitude corresponding to '
+              'about one second of total recorded data volume. '
+              'If the value specified is 0, then every message is directly written to disk.')
++    parser.add_argument(
++        '--max-cache-duration', type=int, default=0,
++        help='Maximum cache duration in seconds.\n'
++             'Default: %(default)d, indicates that buffering will be limited by the'
++             ' --max-cache-size parameter only. If the value is more than 0, the cache buffer'
++             ' will be limited by both the series of messages duration and the maximum cache size'
++             ' parameter.\n'
++             'To override the upper bound by total messages size, the --max-cache-size parameter'
++             ' can be set to 0.')
+     parser.add_argument(
+         '--disable-keyboard-controls', action='store_true', default=False,
+         help='disables keyboard controls for recorder')
+@@ -313,6 +322,24 @@ def validate_parsed_arguments(args, uri) -> str:
+     if args.stats_max_publishing_rate < 0 or args.stats_max_publishing_rate > 1000.0:
+         return print_error('stats_max_publishing_rate must be between 0 and 1000.')
+ 
++    if args.max_cache_size < 0:
++        return print_error('max_cache_size must be a non-negative integer.')
++
++    if args.max_cache_size > 4294967295:
++        return print_error('max_cache_size must not exceed 4294967295 bytes '
++                           '(~4 GiB, uint32_t max).')
++
++    if args.max_cache_duration < 0:
++        return print_error('max_cache_duration must be a non-negative integer.')
++
++    if args.max_cache_duration > 4294967295:
++        return print_error('max_cache_duration must not exceed 4294967295 seconds '
++                           '(~136 years, uint32_t max).')
++
++    if args.snapshot_mode and args.max_cache_duration == 0 and args.max_cache_size == 0:
++        return print_error('In snapshot mode, either the max_cache_duration or max_cache_size'
++                           ' shall not be set to zero.')
++
+     return None
+ 
+ 
+@@ -364,6 +391,7 @@ class RecordVerb(VerbExtension):
+             max_bagfile_size=args.max_bag_size,
+             max_bagfile_duration=args.max_bag_duration,
+             max_cache_size=args.max_cache_size,
++            max_cache_duration=args.max_cache_duration,
+             storage_preset_profile=args.storage_preset_profile,
+             storage_config_uri=storage_config_file,
+             snapshot_mode=args.snapshot_mode,
+diff --git a/rosbag2_cpp/CMakeLists.txt b/rosbag2_cpp/CMakeLists.txt
+index 7fc73755..4d4622c6 100644
+--- a/rosbag2_cpp/CMakeLists.txt
++++ b/rosbag2_cpp/CMakeLists.txt
+@@ -204,10 +204,13 @@ if(BUILD_TESTING)
+   ament_add_gmock(test_circular_message_cache
+     test/rosbag2_cpp/test_circular_message_cache.cpp)
+   if(TARGET test_circular_message_cache)
+-    target_link_libraries(test_circular_message_cache ${PROJECT_NAME})
++    target_link_libraries(test_circular_message_cache
++      ${PROJECT_NAME}
++      rcutils::rcutils
++      rosbag2_storage::rosbag2_storage
++    )
+   endif()
+ 
+-
+   # If compiling with gcc, run this test with sanitizers enabled
+   ament_add_gmock(test_ros2_message
+     test/rosbag2_cpp/types/test_ros2_message.cpp
+diff --git a/rosbag2_cpp/include/rosbag2_cpp/cache/circular_message_cache.hpp b/rosbag2_cpp/include/rosbag2_cpp/cache/circular_message_cache.hpp
+index 0bf399e1..aa334f52 100644
+--- a/rosbag2_cpp/include/rosbag2_cpp/cache/circular_message_cache.hpp
++++ b/rosbag2_cpp/include/rosbag2_cpp/cache/circular_message_cache.hpp
+@@ -46,13 +46,19 @@ namespace cache
+ /// Provides a "deferred-consumption" implementation of the MessageCacheInterface.
+ /// When a consumer asks for a buffer, it will not receive a new buffer until some control
+ /// source calls `swap_buffers` manually.
+-/// This is useful for a snapshot mode, where no data is written to disk until asked for,
++/// This is useful for snapshot mode, where no data is written to disk until asked for,
+ /// then the full circular buffer is dumped all at once, giving historical context.
++/// The buffer can be limited by both size (max_buffer_size) and time duration
++/// (max_buffer_duration). If both are non-zero, both bounds are enforced.
+ class ROSBAG2_CPP_PUBLIC CircularMessageCache
+   : public MessageCacheInterface
+ {
+ public:
+-  explicit CircularMessageCache(size_t max_buffer_size);
++  /// \brief Parametrized constructor
++  /// \param max_buffer_size Maximum buffer size in bytes. If 0, only limited by duration.
++  /// \param max_buffer_duration Maximum buffer duration in seconds. If 0, only limited by size.
++  /// At least one parameter must be non-zero.
++  explicit CircularMessageCache(size_t max_buffer_size, uint32_t max_buffer_duration = 0);
+ 
+   ~CircularMessageCache() override;
+ 
+diff --git a/rosbag2_cpp/include/rosbag2_cpp/cache/message_cache.hpp b/rosbag2_cpp/include/rosbag2_cpp/cache/message_cache.hpp
+index 1ae47438..76538f6b 100644
+--- a/rosbag2_cpp/include/rosbag2_cpp/cache/message_cache.hpp
++++ b/rosbag2_cpp/include/rosbag2_cpp/cache/message_cache.hpp
+@@ -71,7 +71,7 @@ class ROSBAG2_CPP_PUBLIC MessageCache
+   : public MessageCacheInterface
+ {
+ public:
+-  explicit MessageCache(size_t max_buffer_size);
++  explicit MessageCache(size_t max_buffer_size, uint32_t max_buffer_duration = 0);
+ 
+   ~MessageCache() override;
+ 
+diff --git a/rosbag2_cpp/include/rosbag2_cpp/cache/message_cache_buffer.hpp b/rosbag2_cpp/include/rosbag2_cpp/cache/message_cache_buffer.hpp
+index f9d8c07f..45af4f2f 100644
+--- a/rosbag2_cpp/include/rosbag2_cpp/cache/message_cache_buffer.hpp
++++ b/rosbag2_cpp/include/rosbag2_cpp/cache/message_cache_buffer.hpp
+@@ -35,27 +35,39 @@ namespace rosbag2_cpp
+ {
+ namespace cache
+ {
+-/**
+-* This class implements a single buffer for message cache. The buffer is byte size
+-* limited and won't accept any messages when current buffer byte size is already
+-* over the limit set by max_cache_size. This means that buffer can at times use
+-* more memory than max_cache_size, but never by more than a single message. When
+-* the buffer is full, the next incoming message is dropped.
+-*
+-* Note that it could be reused as a template with any class that has
+-* ->byte_size() - like interface
+-*/
++
++/// \brief This class implements a single buffer for message cache.
++/// \details The buffer is limited by total byte size of the stored messages or by total duration
++/// of the stored messages. When the buffer is full, the next incoming message is dropped.
++/// \note When both max_cache_size and max_cache_duration are set, the buffer will drop
++/// messages when either of the limits is exceeded.
++/// \note If max_cache_size is set to zero, the buffer will be only bounded by max_cache_duration.
++/// \note If max_cache_duration is set to zero, the buffer will be only bounded by
++/// max_cache_size.
++/// \note if max_cache_size more than zero, but an individual message exceeds the buffer size,
++/// the message still will be added to the buffer. This means that buffer can at times use more
++/// memory than max_cache_size, but never by more than a single message. When the buffer is full,
++/// the next incoming message is dropped.
+ class ROSBAG2_CPP_PUBLIC MessageCacheBuffer
+   : public CacheBufferInterface
+ {
+ public:
+-  explicit MessageCacheBuffer(size_t max_cache_size);
++  /// \brief Parametrized constructor
++  /// \param max_cache_size Maximum amount of memory which could be occupied by the messages stored
++  /// in the buffer. Note. If max_cache_size is zero, the buffer will be only bounded by the
++  /// max_cache_duration.
++  /// \param max_cache_duration Maximum duration in seconds of message sequence allowed to be
++  /// stored in the buffer. Note. If max_cache_duration is zero, the buffer will be only bounded by
++  /// the max_cache_size.
++  /// \throws std::invalid_argument if both max_cache_size and max_cache_duration are zero.
++  explicit MessageCacheBuffer(size_t max_cache_size, uint32_t max_cache_duration = 0);
+ 
+-  /**
+-  * If buffer size got some space left, we push message regardless of its size, but if
+-  * this results in exceeding buffer size, we mark buffer to drop all new incoming messages.
+-  * This flag is cleared when buffers are swapped.
+-  */
++  /// \brief Pushes a new message into the buffer
++  /// \details If buffer size got some space left, we push message regardless of its size, but if
++  /// this results in exceeding buffer size or duration limits, we mark buffer to drop all new
++  /// incoming messages. This flag is cleared when buffers are swapped.
++  /// \param msg Shared pointer to the rosbag2_storage::SerializedBagMessage to add to the buffer.
++  /// \return True if message was successfully pushed, otherwise false.
+   bool push(CacheBufferInterface::buffer_element_t msg) override;
+ 
+   /// Clear buffer
+@@ -69,10 +81,18 @@ public:
+ 
+ private:
+   std::vector<CacheBufferInterface::buffer_element_t> buffer_;
++
++  /// Current size in bytes of messages stored in the buffer
+   size_t buffer_bytes_size_ {0u};
++
++  /// Maximum size in bytes of messages allowed to be stored in the buffer.
+   const size_t max_bytes_size_;
+ 
+-  /// set when buffer is full and should drop messages instead of inserting them
++  /// Maximum duration in nanoseconds of message sequence allowed to be stored in the buffer
++  /// Note. If max_cache_duration_ is zero, the buffer will be only bounded by the max_bytes_size_.
++  const uint64_t max_cache_duration_ns_;
++
++  /// Set when buffer is full and should drop messages instead of inserting them
+   std::atomic_bool drop_messages_ {false};
+ };
+ 
+diff --git a/rosbag2_cpp/include/rosbag2_cpp/cache/message_cache_circular_buffer.hpp b/rosbag2_cpp/include/rosbag2_cpp/cache/message_cache_circular_buffer.hpp
+index 92541ddd..25ff8df7 100644
+--- a/rosbag2_cpp/include/rosbag2_cpp/cache/message_cache_circular_buffer.hpp
++++ b/rosbag2_cpp/include/rosbag2_cpp/cache/message_cache_circular_buffer.hpp
+@@ -36,31 +36,36 @@ namespace rosbag2_cpp
+ namespace cache
+ {
+ 
+-/**
+-* This class implements a circular buffer message cache. Since the buffer
+-* size is limited by total byte size of the storage messages rather than
+-* a fix number of messages, a deque is used instead of a vector since
+-* older messages can always be dropped from the front and new messages added
+-* to the end. The buffer will never consume more than max_cache_size bytes,
+-* and will log a warning message if an individual message exceeds the buffer
+-* size.
+-*/
++/// This class implements a circular buffer message cache. Since the buffer
++/// size is limited by the total byte size of the storage messages or a total messages duration
++/// rather than a fixed number of messages, a deque is used instead of a vector since
++/// older messages can always be dropped from the front and new messages added
++/// to the end. The buffer will never consume more than max_cache_size bytes, if max_cache_size > 0,
++/// and will never exceed max_cache_duration in time span, if max_cache_duration > 0.
++/// The buffer will log a warning message if an individual message exceeds the buffer size.
+ class ROSBAG2_CPP_PUBLIC MessageCacheCircularBuffer
+   : public CacheBufferInterface
+ {
+ public:
+-  // Delete default constructor since max_cache_size is required
++  // Delete default constructor since at least max_cache_size is required
+   MessageCacheCircularBuffer() = delete;
+-  explicit MessageCacheCircularBuffer(size_t max_cache_size);
+-
+-  /**
+-  * \brief Pushes a SerializedBagMessage into the cache buffer.
+-  * \details If buffer size has some space left, we push the message regardless of its size,
+-  * but if this results in exceeding buffer size, we begin dropping old messages.
+-  * \param msg SerializedBagMessage to add to the buffer.
+-  * \return True if message was successfully pushed. Returns false if msg is null or if msg size
+-  * exceeds max buffer size.
+-  */
++
++  /// \brief Parametrized constructor
++  /// \param max_cache_size Maximum amount of memory which could be occupied by the messages stored
++  /// in the circular buffer. Note: If max_cache_size is zero, the circular buffer will be only
++  /// bounded by the max_cache_duration.
++  /// \param max_cache_duration Maximum duration in seconds of message sequence allowed to be
++  /// stored in the circular buffer. Note: If max_cache_duration is zero, the circular buffer
++  /// will be only bounded by the max_cache_size. If both are non-zero, both limits apply.
++  /// \throws std::invalid_argument if both max_cache_size and max_cache_duration are zero.
++  explicit MessageCacheCircularBuffer(size_t max_cache_size, uint32_t max_cache_duration = 0);
++
++  /// \brief Pushes a new message into the circular buffer
++  /// \details If buffer has space remaining, the message is pushed regardless of its size,
++  /// but if this results in exceeding the buffer size or duration limits, old messages are dropped.
++  /// \param msg Shared pointer to the rosbag2_storage::SerializedBagMessage to add to the buffer.
++  /// \return True if message was successfully pushed. Returns false if msg is null or if
++  /// buffer_bytes_size_ > 0 and msg->serialized_data->buffer_length > max_cache_size.
+   bool push(CacheBufferInterface::buffer_element_t msg) override;
+ 
+   /// Clear buffer
+@@ -73,10 +78,22 @@ public:
+   const std::vector<CacheBufferInterface::buffer_element_t> & data() override;
+ 
+ private:
++  /// \brief Deque buffer to hold messages
+   std::deque<CacheBufferInterface::buffer_element_t> buffer_;
++
++  /// \brief Vector view of the buffer_ deque for data() method
+   std::vector<CacheBufferInterface::buffer_element_t> msg_vector_;
++
++  /// \brief Current size in bytes of messages stored in the buffer
+   size_t buffer_bytes_size_ {0u};
++
++  /// \brief Maximum amount of memory which could be occupied by the messages stored in the buffer.
++  /// If zero, the buffer is only bounded by max_cache_duration_.
+   const size_t max_bytes_size_;
++
++  /// \brief Maximum duration in nanoseconds of message sequence allowed to be stored in the buffer.
++  /// If zero or negative, the buffer is only bounded by max_bytes_size_.
++  const uint64_t max_cache_duration_ns_;
+ };
+ 
+ }  // namespace cache
+diff --git a/rosbag2_cpp/src/rosbag2_cpp/cache/circular_message_cache.cpp b/rosbag2_cpp/src/rosbag2_cpp/cache/circular_message_cache.cpp
+index b9fc18ce..b5bb50f8 100644
+--- a/rosbag2_cpp/src/rosbag2_cpp/cache/circular_message_cache.cpp
++++ b/rosbag2_cpp/src/rosbag2_cpp/cache/circular_message_cache.cpp
+@@ -27,10 +27,12 @@ namespace rosbag2_cpp
+ namespace cache
+ {
+ 
+-CircularMessageCache::CircularMessageCache(size_t max_buffer_size)
++CircularMessageCache::CircularMessageCache(size_t max_buffer_size, uint32_t max_buffer_duration)
+ {
+-  producer_buffer_ = std::make_shared<MessageCacheCircularBuffer>(max_buffer_size);
+-  consumer_buffer_ = std::make_shared<MessageCacheCircularBuffer>(max_buffer_size);
++  producer_buffer_ =
++    std::make_shared<MessageCacheCircularBuffer>(max_buffer_size, max_buffer_duration);
++  consumer_buffer_ =
++    std::make_shared<MessageCacheCircularBuffer>(max_buffer_size, max_buffer_duration);
+ }
+ 
+ CircularMessageCache::~CircularMessageCache()
+diff --git a/rosbag2_cpp/src/rosbag2_cpp/cache/message_cache.cpp b/rosbag2_cpp/src/rosbag2_cpp/cache/message_cache.cpp
+index d05cb95b..d00b0b40 100644
+--- a/rosbag2_cpp/src/rosbag2_cpp/cache/message_cache.cpp
++++ b/rosbag2_cpp/src/rosbag2_cpp/cache/message_cache.cpp
+@@ -28,10 +28,10 @@ namespace rosbag2_cpp
+ namespace cache
+ {
+ 
+-MessageCache::MessageCache(size_t max_buffer_size)
++MessageCache::MessageCache(size_t max_buffer_size, uint32_t max_buffer_duration)
+ {
+-  producer_buffer_ = std::make_shared<MessageCacheBuffer>(max_buffer_size);
+-  consumer_buffer_ = std::make_shared<MessageCacheBuffer>(max_buffer_size);
++  producer_buffer_ = std::make_shared<MessageCacheBuffer>(max_buffer_size, max_buffer_duration);
++  consumer_buffer_ = std::make_shared<MessageCacheBuffer>(max_buffer_size, max_buffer_duration);
+ }
+ 
+ MessageCache::~MessageCache()
+@@ -41,11 +41,15 @@ MessageCache::~MessageCache()
+   // exceptional situations.
+   flushing_ = true;
+   cache_condition_var_.notify_one();
+-  log_dropped();
++  MessageCache::log_dropped();
+ }
+ 
+ bool MessageCache::push(std::shared_ptr<const rosbag2_storage::SerializedBagMessage> msg)
+ {
++  if (!msg) {
++    ROSBAG2_CPP_LOG_ERROR("Attempted to push null message into cache. Dropping message!");
++    return false;
++  }
+   // While pushing, we keep track of inserted and dropped messages as well
+   bool pushed = false;
+   {
+@@ -53,13 +57,13 @@ bool MessageCache::push(std::shared_ptr<const rosbag2_storage::SerializedBagMess
+     pushed = producer_buffer_->push(msg);
+     data_ready_ = true;  // Don't use notify_data_ready() here for the sake of performance.
+   }
+-  // Notify the consumer that data is ready
+-  cache_condition_var_.notify_one();
+ 
+-  if (!pushed) {
++  if (pushed) {
++    // Notify the consumer that data is ready
++    cache_condition_var_.notify_one();
++  } else {
+     messages_dropped_per_topic_[msg->topic_name]++;
+   }
+-
+   return pushed;
+ }
+ 
+diff --git a/rosbag2_cpp/src/rosbag2_cpp/cache/message_cache_buffer.cpp b/rosbag2_cpp/src/rosbag2_cpp/cache/message_cache_buffer.cpp
+index dece8add..c9c4bcda 100644
+--- a/rosbag2_cpp/src/rosbag2_cpp/cache/message_cache_buffer.cpp
++++ b/rosbag2_cpp/src/rosbag2_cpp/cache/message_cache_buffer.cpp
+@@ -15,31 +15,74 @@
+ #include <memory>
+ #include <vector>
+ 
++#include "rcutils/time.h"
+ #include "rosbag2_cpp/cache/cache_buffer_interface.hpp"
+ #include "rosbag2_cpp/cache/message_cache_buffer.hpp"
++#include "rosbag2_cpp/logging.hpp"
+ 
+ namespace rosbag2_cpp
+ {
+ namespace cache
+ {
+-
+-MessageCacheBuffer::MessageCacheBuffer(size_t max_cache_size)
+-: max_bytes_size_(max_cache_size)
++MessageCacheBuffer::MessageCacheBuffer(size_t max_cache_size, uint32_t max_cache_duration)
++: max_bytes_size_(max_cache_size), max_cache_duration_ns_(RCUTILS_S_TO_NS(max_cache_duration))
+ {
++  if (max_bytes_size_ == 0 && max_cache_duration_ns_ == 0) {
++    throw std::invalid_argument("Invalid arguments for the MessageCacheBuffer. "
++                                "Both max_bytes_size and max_cache_duration are zero.");
++  }
+   buffer_.reserve(512);  // Reserve some space to avoid reallocations. 16x512 = 8192 bytes.
+ }
+ 
+ bool MessageCacheBuffer::push(CacheBufferInterface::buffer_element_t msg)
+ {
++  if (!msg || !msg->serialized_data) {
++    ROSBAG2_CPP_LOG_ERROR("Attempted to push null message into cache buffer. Dropping message!");
++    return false;
++  }
++
++  rcutils_time_point_value_t prospected_buffer_duration = 0;
++  // Calculate the prospected buffer duration if we add this message to the buffer in case of
++  // time-limited buffering.
++  if (max_cache_duration_ns_ > 0 && buffer_.size() > 0) {  //  If we have at least 1 message
++    // Note: the oldest messages are at the front of the vector
++    prospected_buffer_duration = msg->recv_timestamp - buffer_.front()->recv_timestamp;
++    if (prospected_buffer_duration < 0) {
++      ROSBAG2_CPP_LOG_ERROR_STREAM("Can't calculate prospected cache buffer duration: "
++        << "oldest message timestamp " << buffer_.front()->recv_timestamp
++        << " is earlier than new message timestamp " << msg->recv_timestamp
++        << ". Dropping new message!");
++      // Note: We drop the new message in this case, because we can't determine
++      // whether adding it would exceed the time limit. However, the next message may have
++      // a correct timestamp and be added to the buffer.
++      return false;
++    }
++  }
++
+   bool pushed = false;
++
+   if (!drop_messages_) {
+-    buffer_bytes_size_ += msg->serialized_data->buffer_length;
+-    buffer_.push_back(msg);
+-    pushed = true;
+-  }
++    // Check if cache is limited by time and adding this message would exceed the time limit
++    if (max_cache_duration_ns_ > 0) {
++      // Note: The casting to uint64_t is safe here, as we have already checked that
++      // prospected_buffer_duration is not negative.
++      if (static_cast<uint64_t>(prospected_buffer_duration) > max_cache_duration_ns_) {
++        drop_messages_ = true;
++      }
++    }
++
++    // Note: Allow at least one message to be added even if it exceeds the size limit.
++    if (max_bytes_size_ > 0 && !buffer_.empty()) {
++      if (buffer_bytes_size_ + msg->serialized_data->buffer_length > max_bytes_size_) {
++        drop_messages_ = true;
++      }
++    }
+ 
+-  if (buffer_bytes_size_ >= max_bytes_size_) {
+-    drop_messages_ = true;
++    if (!drop_messages_) {
++      buffer_bytes_size_ += msg->serialized_data->buffer_length;
++      buffer_.push_back(msg);
++      pushed = true;
++    }
+   }
+   return pushed;
+ }
+diff --git a/rosbag2_cpp/src/rosbag2_cpp/cache/message_cache_circular_buffer.cpp b/rosbag2_cpp/src/rosbag2_cpp/cache/message_cache_circular_buffer.cpp
+index fdcc7441..a8a33c48 100644
+--- a/rosbag2_cpp/src/rosbag2_cpp/cache/message_cache_circular_buffer.cpp
++++ b/rosbag2_cpp/src/rosbag2_cpp/cache/message_cache_circular_buffer.cpp
+@@ -16,18 +16,25 @@
+ #include <memory>
+ #include <vector>
+ 
+-#include "rosbag2_cpp/logging.hpp"
++#include "rcutils/time.h"
+ #include "rosbag2_cpp/cache/cache_buffer_interface.hpp"
+ #include "rosbag2_cpp/cache/message_cache_circular_buffer.hpp"
++#include "rosbag2_cpp/logging.hpp"
+ 
+ namespace rosbag2_cpp
+ {
+ namespace cache
+ {
+ 
+-MessageCacheCircularBuffer::MessageCacheCircularBuffer(size_t max_cache_size)
+-: max_bytes_size_(max_cache_size)
++MessageCacheCircularBuffer::MessageCacheCircularBuffer(
++  size_t max_cache_size,
++  uint32_t max_cache_duration)
++: max_bytes_size_(max_cache_size), max_cache_duration_ns_(RCUTILS_S_TO_NS(max_cache_duration))
+ {
++  if (max_bytes_size_ == 0 && max_cache_duration_ns_ == 0) {
++    throw std::invalid_argument("Invalid arguments for the MessageCacheCircularBuffer. "
++                                "Both max_bytes_size and max_cache_duration are zero.");
++  }
+ }
+ 
+ bool MessageCacheCircularBuffer::push(CacheBufferInterface::buffer_element_t msg)
+@@ -38,17 +45,53 @@ bool MessageCacheCircularBuffer::push(CacheBufferInterface::buffer_element_t msg
+   }
+ 
+   // Drop message if it exceeds the buffer size
+-  if (msg->serialized_data->buffer_length > max_bytes_size_) {
++  if (max_bytes_size_ > 0 && msg->serialized_data->buffer_length > max_bytes_size_) {
+     ROSBAG2_CPP_LOG_WARN("Last message exceeds snapshot buffer size. Dropping message!");
+     return false;
+   }
+ 
+-  // Remove any old items until there is room for new message
+-  while (buffer_bytes_size_ > (max_bytes_size_ - msg->serialized_data->buffer_length)) {
++  // Remove any old items until there is room for a new message
++  while (max_bytes_size_ > 0 &&
++    buffer_bytes_size_ > (max_bytes_size_ - msg->serialized_data->buffer_length))
++  {
+     buffer_bytes_size_ -= buffer_.front()->serialized_data->buffer_length;
+     buffer_.pop_front();
+   }
+-  // Add new message to end of buffer
++  // Remove old messages until the time span between the oldest and newest message
++  // is less than or equal to max_cache_duration_ns_.
++  if (max_cache_duration_ns_ > 0 && buffer_.size() > 0) {
++    // Note: the oldest messages are at the front of the deque
++    auto prospected_buffer_duration = msg->recv_timestamp - buffer_.front()->recv_timestamp;
++    if (prospected_buffer_duration < 0) {
++      ROSBAG2_CPP_LOG_ERROR_STREAM("Can't calculate prospected circular cache buffer duration: "
++        << "oldest message timestamp " << buffer_.front()->recv_timestamp
++        << " is earlier than new message timestamp " << msg->recv_timestamp
++        << ". Dropping new message!");
++      // Note: We drop the new message in this case, because we can't determine
++      // whether adding it would exceed the time limit. However, the next message may have
++      // a correct timestamp and be added to the buffer.
++      return false;
++    }
++
++    auto prospected_buffer_duration_exceed_limit = [&]() {
++        if (prospected_buffer_duration < 0) {
++          ROSBAG2_CPP_LOG_ERROR_STREAM("Can't calculate prospected circular cache buffer duration: "
++            << "oldest message timestamp " << buffer_.front()->recv_timestamp
++            << " is earlier than new message timestamp " << msg->recv_timestamp
++            << ". Dropping oldest message!");
++          return true;
++        }
++        return static_cast<uint64_t>(prospected_buffer_duration) > max_cache_duration_ns_;
++      };
++
++    while (buffer_.size() > 0 && prospected_buffer_duration_exceed_limit()) {
++      buffer_bytes_size_ -= buffer_.front()->serialized_data->buffer_length;
++      buffer_.pop_front();
++      // Note: the oldest messages are at the front of the deque
++      prospected_buffer_duration = msg->recv_timestamp - buffer_.front()->recv_timestamp;
++    }
++  }
++  // Add a new message to the end of the buffer
+   buffer_bytes_size_ += msg->serialized_data->buffer_length;
+   buffer_.push_back(msg);
+ 
+diff --git a/rosbag2_cpp/src/rosbag2_cpp/reindexer.cpp b/rosbag2_cpp/src/rosbag2_cpp/reindexer.cpp
+index 925991b5..f3591494 100644
+--- a/rosbag2_cpp/src/rosbag2_cpp/reindexer.cpp
++++ b/rosbag2_cpp/src/rosbag2_cpp/reindexer.cpp
+@@ -177,14 +177,8 @@ void Reindexer::aggregate_metadata(
+     metadata_.bag_size += fs::file_size(f_);
+ 
+     // Set up reader
+-    rosbag2_storage::StorageOptions temp_so = {
+-      f_.string(),
+-      storage_options.storage_id,
+-      storage_options.max_bagfile_size,
+-      storage_options.max_bagfile_duration,
+-      storage_options.max_cache_size,
+-      storage_options.storage_config_uri
+-    };
++    rosbag2_storage::StorageOptions temp_so = storage_options;
++    temp_so.uri = f_.string();
+ 
+     // We aren't actually interested in reading messages, so use a blank converter option
+     rosbag2_cpp::ConverterOptions blank_converter_options {};
+diff --git a/rosbag2_cpp/src/rosbag2_cpp/writers/sequential_writer.cpp b/rosbag2_cpp/src/rosbag2_cpp/writers/sequential_writer.cpp
+index 73dddc30..fb9ce065 100644
+--- a/rosbag2_cpp/src/rosbag2_cpp/writers/sequential_writer.cpp
++++ b/rosbag2_cpp/src/rosbag2_cpp/writers/sequential_writer.cpp
+@@ -147,19 +147,22 @@ void SequentialWriter::open(
+     throw std::runtime_error{error.str()};
+   }
+ 
+-  use_cache_ = storage_options.max_cache_size > 0u;
++  use_cache_ =
++    storage_options.max_cache_size > 0u || storage_options.max_cache_duration > 0u;
++
+   if (storage_options.snapshot_mode && !use_cache_) {
+     throw std::runtime_error(
+-            "Max cache size must be greater than 0 when snapshot mode is enabled");
++            "Either the max cache size or the maximum cache duration must be greater than 0"
++            " when snapshot mode is enabled");
+   }
+ 
+   if (use_cache_) {
+     if (storage_options.snapshot_mode) {
+       message_cache_ = std::make_shared<rosbag2_cpp::cache::CircularMessageCache>(
+-        storage_options.max_cache_size);
++        storage_options.max_cache_size, storage_options.max_cache_duration);
+     } else {
+       message_cache_ = std::make_shared<rosbag2_cpp::cache::MessageCache>(
+-        storage_options.max_cache_size);
++        storage_options.max_cache_size, storage_options.max_cache_duration);
+     }
+     cache_consumer_ = std::make_unique<rosbag2_cpp::cache::CacheConsumer>(
+       message_cache_,
+diff --git a/rosbag2_cpp/test/rosbag2_cpp/test_circular_message_cache.cpp b/rosbag2_cpp/test/rosbag2_cpp/test_circular_message_cache.cpp
+index 6627c641..c8c63c01 100644
+--- a/rosbag2_cpp/test/rosbag2_cpp/test_circular_message_cache.cpp
++++ b/rosbag2_cpp/test/rosbag2_cpp/test_circular_message_cache.cpp
+@@ -14,18 +14,21 @@
+ 
+ #include <gmock/gmock.h>
+ 
++#include <chrono>
+ #include <cmath>
+ #include <list>
+ #include <memory>
+ #include <string>
+ #include <utility>
+ 
++#include "rcutils/time.h"
+ #include "rosbag2_storage/ros_helper.hpp"
+ #include "rosbag2_storage/serialized_bag_message.hpp"
+ 
+ #include "rosbag2_cpp/cache/circular_message_cache.hpp"
+ 
+ using namespace testing;  // NOLINT
++using namespace std::chrono_literals;
+ 
+ namespace
+ {
+@@ -34,15 +37,20 @@ inline size_t abs_diff(size_t a, size_t b)
+   return a < b ? b - a : a - b;
+ }
+ 
+-std::shared_ptr<rosbag2_storage::SerializedBagMessage> make_test_msg()
++// Helper to construct a test message with given timestamp and content.
++std::shared_ptr<rosbag2_storage::SerializedBagMessage> make_test_msg(
++  const rcutils_time_point_value_t timestamp_ns = 0,
++  const std::string & content = "")
+ {
+   static uint32_t counter = 0;
+-  std::string msg_content = "Hello" + std::to_string(counter++);
+-  auto msg_length = msg_content.length();
++  // Fallback to a default unique message if no content provided
++  std::string msg_content = (content.empty()) ? "Hello" + std::to_string(counter++) : content;
++
+   auto message = std::make_shared<rosbag2_storage::SerializedBagMessage>();
+   message->topic_name = "test_topic";
+-  message->serialized_data = rosbag2_storage::make_serialized_message(
+-    msg_content.c_str(), msg_length);
++  message->recv_timestamp = timestamp_ns;
++  message->serialized_data =
++    rosbag2_storage::make_serialized_message(msg_content.c_str(), msg_content.length());
+   return message;
+ }
+ 
+@@ -135,10 +143,181 @@ TEST_F(CircularMessageCacheTest, circular_message_cache_ensure_empty) {
+ }
+ 
+ TEST_F(CircularMessageCacheTest, circular_message_cache_rejects_null_message) {
+-  auto circular_message_cache_ = std::make_shared<rosbag2_cpp::cache::CircularMessageCache>(
+-  cache_size_);
++  auto circular_message_cache = std::make_shared<rosbag2_cpp::cache::CircularMessageCache>(500);
+ 
+   bool result = true;
+-  ASSERT_NO_THROW(result = circular_message_cache_->push(nullptr));
++  ASSERT_NO_THROW(result = circular_message_cache->push(nullptr));
++  EXPECT_FALSE(result);
++
++  // Test message with null serialized data
++  auto msg = make_test_msg();
++  msg->serialized_data = nullptr;
++  ASSERT_NO_THROW(result = circular_message_cache->push(msg));
+   EXPECT_FALSE(result);
+ }
++
++TEST_F(CircularMessageCacheTest, constructor_throws_if_both_limits_are_zero) {
++  EXPECT_THROW(rosbag2_cpp::cache::CircularMessageCache(0, 0), std::invalid_argument);
++}
++
++TEST_F(CircularMessageCacheTest, time_only_buffer_drops_old_messages_by_duration) {
++  // No size limit, keep ~1s window
++  const uint32_t max_buffer_duration = 1;  // 1 second
++  auto circular_message_cache = std::make_shared<rosbag2_cpp::cache::CircularMessageCache>(
++    /*max_buffer_size=*/0, max_buffer_duration);
++
++  // Push messages with synthetic timestamps spaced 100ms
++  const auto base = 1s;
++  const auto messages_interval = 100ms;
++  constexpr size_t message_count = 30;  // 3 seconds total
++  const size_t expected_count = 1s / messages_interval + 1;  // Expect 11 messages in 1s window
++  for (size_t i = 0; i < message_count; i++) {
++    auto ts = base + (i * messages_interval);
++    auto msg = make_test_msg(std::chrono::duration_cast<std::chrono::nanoseconds>(ts).count());
++    EXPECT_TRUE(circular_message_cache->push(msg));
++  }
++
++  circular_message_cache->notify_data_ready();
++  circular_message_cache->swap_buffers();
++
++  auto consumer_buffer = circular_message_cache->get_consumer_buffer();
++  auto messages = consumer_buffer->data();
++  circular_message_cache->release_consumer_buffer();
++
++  ASSERT_EQ(messages.size(), expected_count);
++  const auto oldest = messages.front()->recv_timestamp;
++  const auto newest = messages.back()->recv_timestamp;
++  const auto span_ns = newest - oldest;
++  EXPECT_GT(span_ns, 0);
++  EXPECT_LE(span_ns, RCUTILS_S_TO_NS(max_buffer_duration));
++
++  // Verify we kept the newest messages (last 1-second window)
++  const auto expected_newest = base + ((message_count - 1) * messages_interval);
++  EXPECT_EQ(newest, std::chrono::duration_cast<std::chrono::nanoseconds>(expected_newest).count());
++  // Oldest should be 1 second before newest
++  const auto expected_oldest = expected_newest - 1s;
++  EXPECT_EQ(oldest, std::chrono::duration_cast<std::chrono::nanoseconds>(expected_oldest).count());
++}
++
++TEST_F(CircularMessageCacheTest, size_only_buffer_drops_old_messages_by_size) {
++  // Size limit ~200 bytes, no time limit
++  // 200 bytes ~28 messages with content = std::string(7, 'x'); (7 bytes + overhead)
++  const size_t max_buffer_size = 200;
++  auto circular_message_cache = std::make_shared<rosbag2_cpp::cache::CircularMessageCache>(
++    max_buffer_size, /*max_buffer_duration=*/0);
++
++  // Push many messages, ensure buffer doesn't grow over the size limit
++  constexpr size_t message_count = 60;
++  const auto messages_interval = 100ms;
++  for (size_t i = 0; i < message_count; i++) {
++    auto ts_ms = i * messages_interval;
++    auto msg = make_test_msg(std::chrono::duration_cast<std::chrono::nanoseconds>(ts_ms).count(),
++                             std::string(7, 'x'));
++    EXPECT_TRUE(circular_message_cache->push(msg));
++  }
++
++  circular_message_cache->notify_data_ready();
++  circular_message_cache->swap_buffers();
++
++  auto consumer_buffer = circular_message_cache->get_consumer_buffer();
++  auto messages = consumer_buffer->data();
++  circular_message_cache->release_consumer_buffer();
++
++  ASSERT_GT(messages.size(), 0u);
++  size_t total_size = 0;
++  for (const auto & m : messages) {
++    total_size += m->serialized_data->buffer_length;
++  }
++  EXPECT_LE(total_size, max_buffer_size);
++  const auto oldest = messages.front()->recv_timestamp;
++  const auto newest = messages.back()->recv_timestamp;
++  const auto span_ns = newest - oldest;
++  EXPECT_GT(span_ns, 0);
++}
++
++TEST_F(CircularMessageCacheTest, time_and_size_buffer_respects_both_limits) {
++  // Size limit ~200 bytes, time limit 2 seconds
++  // 200 bytes ~28 messages with content = std::string(7, 'x'); (7 bytes + overhead)
++  constexpr size_t max_buffer_size = 200;
++  constexpr uint32_t max_buffer_duration = 2;  // 2 seconds
++  auto circular_message_cache = std::make_shared<rosbag2_cpp::cache::CircularMessageCache>(
++    max_buffer_size, max_buffer_duration);
++
++  const auto base = 10s;
++  constexpr size_t message_count = 100;  // > estimated 28 messages
++  const auto messages_interval = 50ms;
++  for (size_t i = 0; i < message_count; i++) {
++    auto ts = base + (i * messages_interval);
++    auto msg = make_test_msg(std::chrono::duration_cast<std::chrono::nanoseconds>(ts).count(),
++                             std::string(7, 'x'));
++    EXPECT_TRUE(circular_message_cache->push(msg));
++  }
++
++  circular_message_cache->notify_data_ready();
++  circular_message_cache->swap_buffers();
++
++  auto consumer_buffer = circular_message_cache->get_consumer_buffer();
++  auto messages = consumer_buffer->data();
++  circular_message_cache->release_consumer_buffer();
++
++  ASSERT_GT(messages.size(), 0u);
++
++  // Check size
++  size_t total_size = 0;
++  for (const auto & m : messages) {
++    total_size += m->serialized_data->buffer_length;
++  }
++  EXPECT_LE(total_size, max_buffer_size);
++
++  // Check time window
++  const auto oldest = messages.front()->recv_timestamp;
++  const auto newest = messages.back()->recv_timestamp;
++  const auto span_ns = newest - oldest;
++  EXPECT_GT(span_ns, 0);
++  EXPECT_LE(span_ns, RCUTILS_S_TO_NS(max_buffer_duration));
++}
++
++TEST_F(CircularMessageCacheTest, rejects_message_exceeding_size_limit) {
++  constexpr uint32_t max_duration_sec = 10;
++  constexpr size_t max_buffer_size = 50;
++
++  auto circular_message_cache = std::make_shared<rosbag2_cpp::cache::CircularMessageCache>(
++    max_buffer_size, max_duration_sec);
++
++  const auto large_msg = make_test_msg(RCUTILS_S_TO_NS(1), std::string(100, 'x'));
++  // Push single message larger than buffer should be rejected
++  EXPECT_FALSE(circular_message_cache->push(large_msg));
++
++  circular_message_cache->notify_data_ready();
++  circular_message_cache->swap_buffers();
++
++  auto buffer = circular_message_cache->get_consumer_buffer()->data();
++  EXPECT_EQ(buffer.size(), 0u);
++}
++
++TEST_F(CircularMessageCacheTest, handles_out_of_order_timestamps_gracefully) {
++  constexpr uint32_t max_duration_sec = 2;
++  constexpr size_t max_buffer_size = 0;
++
++  auto circular_message_cache = std::make_shared<rosbag2_cpp::cache::CircularMessageCache>(
++    max_buffer_size, max_duration_sec);
++
++  const auto base = 5s;
++  const auto newer_ts = base + 3s;
++  const auto newer_message =
++    make_test_msg(std::chrono::duration_cast<std::chrono::nanoseconds>(newer_ts).count());
++  const auto older_message =
++    make_test_msg(std::chrono::duration_cast<std::chrono::nanoseconds>(base).count());
++
++  // Newer message should be accepted
++  EXPECT_TRUE(circular_message_cache->push(newer_message));
++  // Older (out-of-order) message should be rejected by the circular buffer
++  EXPECT_FALSE(circular_message_cache->push(older_message));
++
++  circular_message_cache->notify_data_ready();
++  circular_message_cache->swap_buffers();
++
++  auto buffer = circular_message_cache->get_consumer_buffer()->data();
++  // Only the newer message should be present
++  EXPECT_EQ(buffer.size(), 1u);
++}
+diff --git a/rosbag2_cpp/test/rosbag2_cpp/test_message_cache.cpp b/rosbag2_cpp/test/rosbag2_cpp/test_message_cache.cpp
+index 3db09b19..b0bf879c 100644
+--- a/rosbag2_cpp/test/rosbag2_cpp/test_message_cache.cpp
++++ b/rosbag2_cpp/test/rosbag2_cpp/test_message_cache.cpp
+@@ -23,6 +23,8 @@
+ #include <vector>
+ #include <thread>
+ 
++#include "rcutils/time.h"
++#include "rosbag2_cpp/cache/message_cache_buffer.hpp"
+ #include "rosbag2_storage/ros_helper.hpp"
+ #include "rosbag2_storage/serialized_bag_message.hpp"
+ 
+@@ -30,18 +32,24 @@
+ #include "mock_message_cache.hpp"
+ 
+ using namespace testing;  // NOLINT
++using namespace std::chrono_literals;
+ 
+ namespace
+ {
+-std::shared_ptr<rosbag2_storage::SerializedBagMessage> make_test_msg()
++// Helper to construct a test message with given timestamp and content.
++std::shared_ptr<rosbag2_storage::SerializedBagMessage> make_test_msg(
++  const rcutils_time_point_value_t timestamp_ns = 0,
++  const std::string & content = "")
+ {
+   static uint32_t counter = 0;
+-  std::string msg_content = "Hello" + std::to_string(counter++);
+-  auto msg_length = msg_content.length();
++  // Fallback to a default unique message if no content provided
++  std::string msg_content = (content.empty()) ? "Hello" + std::to_string(counter++) : content;
++
+   auto message = std::make_shared<rosbag2_storage::SerializedBagMessage>();
+   message->topic_name = "test_topic";
+-  message->serialized_data = rosbag2_storage::make_serialized_message(
+-    msg_content.c_str(), msg_length);
++  message->recv_timestamp = timestamp_ns;
++  message->serialized_data =
++    rosbag2_storage::make_serialized_message(msg_content.c_str(), msg_content.length());
+   return message;
+ }
+ 
+@@ -61,7 +69,7 @@ uint32_t sum_up(const std::unordered_map<std::string, uint32_t> & map)
+ class MessageCacheTest : public Test
+ {
+ public:
+-  MessageCacheTest() {}
++  MessageCacheTest() = default;
+ 
+   virtual ~MessageCacheTest() = default;
+ 
+@@ -105,3 +113,165 @@ TEST_F(MessageCacheTest, message_cache_writes_full_producer_buffer) {
+   mock_cache_consumer->stop();
+   EXPECT_EQ(consumed_message_count, message_count - should_be_dropped_count);
+ }
++
++TEST_F(MessageCacheTest, message_cache_rejects_null_message) {
++  auto message_cache = std::make_shared<rosbag2_cpp::cache::MessageCache>(500);
++
++  bool result = true;
++  ASSERT_NO_THROW(result = message_cache->push(nullptr));
++  EXPECT_FALSE(result);
++
++  // Test message with null serialized data
++  auto msg = make_test_msg();
++  msg->serialized_data = nullptr;
++  ASSERT_NO_THROW(result = message_cache->push(msg));
++  EXPECT_FALSE(result);
++}
++
++TEST_F(MessageCacheTest, constructor_throws_if_both_limits_are_zero) {
++  EXPECT_THROW(rosbag2_cpp::cache::MessageCache(0, 0), std::invalid_argument);
++}
++
++TEST_F(MessageCacheTest, message_cache_buffer_time_only_limits_by_duration) {
++  // Buffer with time bound only: 2 seconds, size unlimited (0)
++  constexpr uint32_t max_duration_sec = 2;
++  constexpr size_t max_buffer_size = 0;
++
++  auto message_cache = rosbag2_cpp::cache::MessageCache(max_buffer_size, max_duration_sec);
++
++  const auto base = 10s;
++  const auto messages_interval = 500ms;
++  constexpr size_t total_message_count = 10;  // 5 seconds total
++  // Expected 5 messages in buffer
++  const size_t expected_msgs = std::chrono::seconds(max_duration_sec) / messages_interval + 1;
++  ASSERT_LT(expected_msgs, total_message_count);
++  for (size_t i = 0; i < expected_msgs; i++) {
++    const auto ts = base + (i * messages_interval);
++    auto msg = make_test_msg(std::chrono::duration_cast<std::chrono::nanoseconds>(ts).count());
++    ASSERT_TRUE(message_cache.push(msg));
++  }
++  const size_t drop_msgs_start_index = total_message_count - expected_msgs;
++  for (size_t i = drop_msgs_start_index; i < total_message_count; i++) {
++    const auto ts = base + (i * messages_interval);
++    auto msg = make_test_msg(std::chrono::duration_cast<std::chrono::nanoseconds>(ts).count());
++    EXPECT_FALSE(message_cache.push(msg));
++  }
++
++  message_cache.notify_data_ready();
++  message_cache.swap_buffers();
++  auto consumer_buffer = message_cache.get_consumer_buffer();
++  const auto & buffer_data = consumer_buffer->data();
++  message_cache.release_consumer_buffer();
++
++  ASSERT_EQ(buffer_data.size(), expected_msgs);
++  const auto oldest = buffer_data.front()->recv_timestamp;
++  const auto newest = buffer_data.back()->recv_timestamp;
++  const auto span_ns = newest - oldest;
++  EXPECT_GT(span_ns, 0);
++  EXPECT_LE(span_ns, RCUTILS_S_TO_NS(max_duration_sec));
++}
++
++TEST_F(MessageCacheTest, message_cache_buffer_size_only_limits_by_size) {
++  // Buffer with size bound only: 300 bytes, time unlimited (0)
++  constexpr size_t max_buffer_size = 300;
++  constexpr uint32_t max_duration_sec = 0;
++
++  auto message_cache = rosbag2_cpp::cache::MessageCache(max_buffer_size, max_duration_sec);
++
++  // Push messages until size limit triggers drop behavior
++  const auto base = 1s;
++  const auto messages_interval = 100ms;
++  constexpr size_t total_message_count = 50;  // 5 seconds total
++  for (size_t i = 0; i < total_message_count; i++) {
++    const auto ts = base + (i * messages_interval);
++    const auto ts_ns = std::chrono::duration_cast<std::chrono::nanoseconds>(ts).count();
++    auto msg = make_test_msg(ts_ns, std::string(17, 'x'));  // ~1 bytes payload. 850 bytes total
++    (void)message_cache.push(msg);
++  }
++
++  message_cache.notify_data_ready();
++  message_cache.swap_buffers();
++  auto consumer_buffer = message_cache.get_consumer_buffer();
++  const auto & buffer_data = consumer_buffer->data();
++  message_cache.release_consumer_buffer();
++
++  ASSERT_GT(buffer_data.size(), 0u);
++  size_t total_size = 0;
++  for (const auto & m : buffer_data) {
++    total_size += m->serialized_data->buffer_length;
++  }
++  EXPECT_LE(total_size, max_buffer_size);
++}
++
++TEST_F(MessageCacheTest, message_cache_buffer_time_and_size_bounds_respected) {
++  // Both bounds: 200 bytes and 3 seconds
++  constexpr size_t max_buffer_size = 200;
++  constexpr uint32_t max_duration_sec = 3;
++
++  auto message_cache = rosbag2_cpp::cache::MessageCache(max_buffer_size, max_duration_sec);
++
++  const auto base = 1s;
++  const auto messages_interval = 100ms;
++  constexpr size_t total_message_count = 50;  // 5 seconds total
++  for (size_t i = 0; i < total_message_count; i++) {
++    const auto ts = base + (i * messages_interval);
++    const auto ts_ns = std::chrono::duration_cast<std::chrono::nanoseconds>(ts).count();
++    auto msg = make_test_msg(ts_ns, std::string(17, 'x'));  // ~17 bytes payload. 850 bytes total
++    (void)message_cache.push(msg);
++  }
++
++  message_cache.notify_data_ready();
++  message_cache.swap_buffers();
++  auto consumer_buffer = message_cache.get_consumer_buffer();
++  const auto & buffer_data = consumer_buffer->data();
++  message_cache.release_consumer_buffer();
++
++  ASSERT_GT(buffer_data.size(), 0u);
++  // Check size bound
++  size_t total_size = 0;
++  for (const auto & m : buffer_data) {
++    total_size += m->serialized_data->buffer_length;
++  }
++  EXPECT_LE(total_size, max_buffer_size);
++
++  // Check time bound
++  const auto oldest = buffer_data.front()->recv_timestamp;
++  const auto newest = buffer_data.back()->recv_timestamp;
++  const auto span_ns = newest - oldest;
++  EXPECT_GT(span_ns, 0);
++  EXPECT_LE(span_ns, RCUTILS_S_TO_NS(max_duration_sec));
++}
++
++TEST_F(MessageCacheTest, message_cache_allows_first_message_exceeding_size_limit) {
++  // MessageCacheBuffer allows at least one message even if it exceeds max size
++  constexpr size_t max_buffer_size = 200;  // 200 bytes
++  constexpr uint32_t max_duration_sec = 0;  // size-only bound
++
++  auto message_cache = rosbag2_cpp::cache::MessageCache(max_buffer_size, max_duration_sec);
++
++  // First oversized message should be accepted
++  const auto ts1_ns = std::chrono::duration_cast<std::chrono::nanoseconds>(1s).count();
++  auto big_msg = make_test_msg(ts1_ns, std::string(500, 'x'));  // ~500 bytes payload
++  ASSERT_TRUE(message_cache.push(big_msg));
++
++  // Subsequent messages should be dropped once buffer is marked to drop (size exceeded)
++  const auto ts2_ns = std::chrono::duration_cast<std::chrono::nanoseconds>(1500ms).count();
++  auto another_msg = make_test_msg(ts2_ns, std::string(10, 'y'));  // small payload
++  EXPECT_FALSE(message_cache.push(another_msg));
++
++  // Consume buffer and verify only the first oversized message is present
++  message_cache.notify_data_ready();
++  message_cache.swap_buffers();
++  auto consumer_buffer = message_cache.get_consumer_buffer();
++  const auto & buffer_data = consumer_buffer->data();
++  message_cache.release_consumer_buffer();
++
++  ASSERT_EQ(buffer_data.size(), 1u);
++  size_t total_size = 0;
++  for (const auto & m : buffer_data) {
++    total_size += m->serialized_data->buffer_length;
++  }
++  // The stored data size can exceed the configured max size by a single message
++  EXPECT_GT(total_size, max_buffer_size);
++  EXPECT_EQ(buffer_data.front()->recv_timestamp, ts1_ns);
++}
+diff --git a/rosbag2_py/rosbag2_py/_storage.pyi b/rosbag2_py/rosbag2_py/_storage.pyi
+index de53c159..076d19e3 100644
+--- a/rosbag2_py/rosbag2_py/_storage.pyi
++++ b/rosbag2_py/rosbag2_py/_storage.pyi
+@@ -102,6 +102,7 @@ class StorageOptions:
+     end_time_ns: int
+     max_bagfile_duration: int
+     max_bagfile_size: int
++    max_cache_duration: int
+     max_cache_size: int
+     snapshot_mode: bool
+     start_time_ns: int
+@@ -109,7 +110,7 @@ class StorageOptions:
+     storage_id: str
+     storage_preset_profile: str
+     uri: str
+-    def __init__(self, uri: str, storage_id: str = ..., max_bagfile_size: int = ..., max_bagfile_duration: int = ..., max_cache_size: int = ..., storage_preset_profile: str = ..., storage_config_uri: str = ..., snapshot_mode: bool = ..., start_time_ns: int = ..., end_time_ns: int = ..., custom_data: Dict[str, str] = ...) -> None: ...
++    def __init__(self, uri: str, storage_id: str = ..., max_bagfile_size: int = ..., max_bagfile_duration: int = ..., max_cache_size: int = ..., max_cache_duration: int = ..., storage_preset_profile: str = ..., storage_config_uri: str = ..., snapshot_mode: bool = ..., start_time_ns: int = ..., end_time_ns: int = ..., custom_data: Dict[str, str] = ...) -> None: ...
+ 
+ class TopicInformation:
+     message_count: int
+diff --git a/rosbag2_py/src/rosbag2_py/_storage.cpp b/rosbag2_py/src/rosbag2_py/_storage.cpp
+index 6d513f14..dc43b373 100644
+--- a/rosbag2_py/src/rosbag2_py/_storage.cpp
++++ b/rosbag2_py/src/rosbag2_py/_storage.cpp
+@@ -13,6 +13,7 @@
+ // limitations under the License.
+ 
+ #include <string>
++#include <utility>
+ #include <vector>
+ 
+ #include "rosbag2_cpp/converter_options.hpp"
+@@ -81,14 +82,42 @@ PYBIND11_MODULE(_storage, m) {
+   using KEY_VALUE_MAP = std::unordered_map<std::string, std::string>;
+   pybind11::class_<rosbag2_storage::StorageOptions>(m, "StorageOptions")
+   .def(
+-    pybind11::init<
+-      std::string, std::string, uint64_t, uint64_t, uint64_t, std::string, std::string, bool,
+-      int64_t, int64_t, KEY_VALUE_MAP>(),
++    pybind11::init(
++      [](
++        std::string uri,
++        std::string storage_id,
++        uint64_t max_bagfile_size,
++        uint64_t max_bagfile_duration,
++        uint64_t max_cache_size,
++        uint32_t max_cache_duration,
++        std::string storage_preset_profile,
++        std::string storage_config_uri,
++        bool snapshot_mode,
++        int64_t start_time_ns,
++        int64_t end_time_ns,
++        KEY_VALUE_MAP custom_data)
++      {
++        return rosbag2_storage::StorageOptions{
++          std::move(uri),
++          std::move(storage_id),
++          max_bagfile_size,
++          max_bagfile_duration,
++          max_cache_size,
++          max_cache_duration,
++          std::move(storage_preset_profile),
++          std::move(storage_config_uri),
++          snapshot_mode,
++          start_time_ns,
++          end_time_ns,
++          std::move(custom_data),
++        };
++      }),
+     pybind11::arg("uri"),
+     pybind11::arg("storage_id") = "",
+     pybind11::arg("max_bagfile_size") = 0,
+     pybind11::arg("max_bagfile_duration") = 0,
+     pybind11::arg("max_cache_size") = 0,
++    pybind11::arg("max_cache_duration") = 0,
+     pybind11::arg("storage_preset_profile") = "",
+     pybind11::arg("storage_config_uri") = "",
+     pybind11::arg("snapshot_mode") = false,
+@@ -106,6 +135,9 @@ PYBIND11_MODULE(_storage, m) {
+   .def_readwrite(
+     "max_cache_size",
+     &rosbag2_storage::StorageOptions::max_cache_size)
++  .def_readwrite(
++    "max_cache_duration",
++    &rosbag2_storage::StorageOptions::max_cache_duration)
+   .def_readwrite(
+     "storage_preset_profile",
+     &rosbag2_storage::StorageOptions::storage_preset_profile)
+diff --git a/rosbag2_storage/include/rosbag2_storage/storage_options.hpp b/rosbag2_storage/include/rosbag2_storage/storage_options.hpp
+index 8d6d1884..929223ed 100644
+--- a/rosbag2_storage/include/rosbag2_storage/storage_options.hpp
++++ b/rosbag2_storage/include/rosbag2_storage/storage_options.hpp
+@@ -39,11 +39,19 @@ public:
+   // A value of 0 indicates that bagfile splitting will not be used.
+   uint64_t max_bagfile_duration = 0;
+ 
+-  // The cache size indiciates how many messages can maximally be hold in cache
+-  // before these being written to disk.
+-  // A value of 0 disables caching and every write happens directly to disk.
++  // The cache size. Indicates how many messages can maximally be held in cache before these being
++  // written to disk. Works together with max_cache_duration bound if set.
++  // A value of 0 disables size-based caching and every write happens directly to disk if
++  // max_cache_duration is also set to 0.
+   uint64_t max_cache_size = 0;
+ 
++  // Maximum cache duration in seconds. Used for time-limited buffering (applies to both snapshot
++  // mode and regular caching). A value of 0 indicates that buffering will be limited by the
++  // max_cache_size only. When greater than 0, the cache buffer maintains messages within
++  // this time window and drops newer messages if cache overflow happened.
++  // Works together with max_cache_size bound if set.
++  uint32_t max_cache_duration = 0;
++
+   // Preset storage configuration. Preset settings can be overriden with
+   // corresponding settings specified through storage_config_uri file
+   std::string storage_preset_profile = "";
+diff --git a/rosbag2_storage/src/rosbag2_storage/storage_options.cpp b/rosbag2_storage/src/rosbag2_storage/storage_options.cpp
+index 717fcb90..f54ae2cf 100644
+--- a/rosbag2_storage/src/rosbag2_storage/storage_options.cpp
++++ b/rosbag2_storage/src/rosbag2_storage/storage_options.cpp
+@@ -29,6 +29,7 @@ Node convert<rosbag2_storage::StorageOptions>::encode(
+   node["max_bagfile_size"] = storage_options.max_bagfile_size;
+   node["max_bagfile_duration"] = storage_options.max_bagfile_duration;
+   node["max_cache_size"] = storage_options.max_cache_size;
++  node["max_cache_duration"] = storage_options.max_cache_duration;
+   node["storage_preset_profile"] = storage_options.storage_preset_profile;
+   node["storage_config_uri"] = storage_options.storage_config_uri;
+   node["snapshot_mode"] = storage_options.snapshot_mode;
+@@ -46,6 +47,7 @@ bool convert<rosbag2_storage::StorageOptions>::decode(
+   optional_assign<uint64_t>(node, "max_bagfile_size", storage_options.max_bagfile_size);
+   optional_assign<uint64_t>(node, "max_bagfile_duration", storage_options.max_bagfile_duration);
+   optional_assign<uint64_t>(node, "max_cache_size", storage_options.max_cache_size);
++  optional_assign<uint32_t>(node, "max_cache_duration", storage_options.max_cache_duration);
+   optional_assign<std::string>(
+     node, "storage_preset_profile", storage_options.storage_preset_profile);
+   optional_assign<std::string>(node, "storage_config_uri", storage_options.storage_config_uri);
+diff --git a/rosbag2_storage/test/rosbag2_storage/test_storage_options.cpp b/rosbag2_storage/test/rosbag2_storage/test_storage_options.cpp
+index 6b9be8e4..ac4f6bf4 100644
+--- a/rosbag2_storage/test/rosbag2_storage/test_storage_options.cpp
++++ b/rosbag2_storage/test/rosbag2_storage/test_storage_options.cpp
+@@ -26,6 +26,7 @@ TEST(storage_options, test_yaml_serialization)
+   original.max_bagfile_size = 5;
+   original.max_bagfile_duration = 120;
+   original.max_cache_size = 1024;
++  original.max_cache_duration = 30;
+   original.storage_preset_profile = "profile";
+   original.storage_config_uri = "config_uri";
+   original.snapshot_mode = true;
+@@ -47,6 +48,7 @@ TEST(storage_options, test_yaml_serialization)
+   ASSERT_EQ(original.max_bagfile_size, reconstructed.max_bagfile_size);
+   ASSERT_EQ(original.max_bagfile_duration, reconstructed.max_bagfile_duration);
+   ASSERT_EQ(original.max_cache_size, reconstructed.max_cache_size);
++  ASSERT_EQ(original.max_cache_duration, reconstructed.max_cache_duration);
+   ASSERT_EQ(original.storage_preset_profile, reconstructed.storage_preset_profile);
+   ASSERT_EQ(original.storage_config_uri, reconstructed.storage_config_uri);
+   ASSERT_EQ(original.snapshot_mode, reconstructed.snapshot_mode);
+diff --git a/rosbag2_storage_sqlite3/test/rosbag2_storage_sqlite3/storage_test_fixture.hpp b/rosbag2_storage_sqlite3/test/rosbag2_storage_sqlite3/storage_test_fixture.hpp
+index be0800eb..37eaabc2 100644
+--- a/rosbag2_storage_sqlite3/test/rosbag2_storage_sqlite3/storage_test_fixture.hpp
++++ b/rosbag2_storage_sqlite3/test/rosbag2_storage_sqlite3/storage_test_fixture.hpp
+@@ -284,8 +284,9 @@ public:
+       out << config_yaml;
+     }
+ 
+-    rosbag2_storage::StorageOptions storage_options{storage_uri, plugin_id, 0, 0, 0,
+-      "", yaml_config};
++    rosbag2_storage::StorageOptions storage_options{
++      storage_uri, plugin_id, 0, 0, 0, 0, "", yaml_config
++    };
+     return storage_options;
+   }
+ 
+diff --git a/rosbag2_storage_sqlite3/test/rosbag2_storage_sqlite3/test_sqlite_storage.cpp b/rosbag2_storage_sqlite3/test/rosbag2_storage_sqlite3/test_sqlite_storage.cpp
+index e894c4de..231dbbc8 100644
+--- a/rosbag2_storage_sqlite3/test/rosbag2_storage_sqlite3/test_sqlite_storage.cpp
++++ b/rosbag2_storage_sqlite3/test/rosbag2_storage_sqlite3/test_sqlite_storage.cpp
+@@ -524,7 +524,7 @@ TEST_F(StorageTestFixture, storage_preset_profile_applies_over_defaults) {
+ 
+   auto temp_dir = std::filesystem::path(temporary_dir_path_);
+   const auto storage_uri = (temp_dir / "rosbag").generic_string();
+-  rosbag2_storage::StorageOptions options{storage_uri, kPluginID, 0, 0, 0, {}, ""};
++  rosbag2_storage::StorageOptions options{storage_uri, kPluginID, 0, 0, 0, 0, {}, ""};
+ 
+   options.storage_preset_profile = "resilient";
+   writable_storage->open(options, rosbag2_storage::storage_interfaces::IOFlag::READ_WRITE);
+diff --git a/rosbag2_tests/test/rosbag2_tests/test_rosbag2_record_end_to_end.cpp b/rosbag2_tests/test/rosbag2_tests/test_rosbag2_record_end_to_end.cpp
+index 6b01eaaf..e58fb45c 100644
+--- a/rosbag2_tests/test/rosbag2_tests/test_rosbag2_record_end_to_end.cpp
++++ b/rosbag2_tests/test/rosbag2_tests/test_rosbag2_record_end_to_end.cpp
+@@ -681,6 +681,80 @@ TEST_P(RecordFixture, rosbag2_record_and_play_multiple_topics_with_filter) {
+   sub->add_subscription<test_msgs::msg::Strings>(first_topic_name, 0);
+ }
+ 
++TEST_P(RecordFixture, record_with_max_cache_duration_only_e2e) {
++  const char * topic_name = "/e2e_time_only_cache";
++  auto message = get_messages_strings()[0];
++  message->string_value = "time_only";
++  size_t expected_count = 20;
++
++  rosbag2_test_common::PublicationManager pub_manager;
++  pub_manager.setup_publisher(topic_name, message, expected_count);
++
++  // Time-only bound: --max-cache-size 0 --max-cache-duration 5
++  std::stringstream cmd;
++  cmd << get_base_record_command()
++      << " --topics " << topic_name
++      << " --max-cache-size 0"
++      << " --max-cache-duration 5";
++
++  auto process_handle = start_execution(cmd.str());
++  auto cleanup = rcpputils::make_scope_exit([&]() {stop_execution(process_handle);});
++
++  ASSERT_TRUE(pub_manager.wait_for_matched(topic_name)) << "Expected rosbag subscription";
++  wait_for_storage_file();
++
++  pub_manager.run_publishers();
++
++  stop_execution(process_handle);
++  cleanup.cancel();
++
++  finalize_metadata_kludge();
++  wait_for_metadata();
++
++  auto msgs = get_messages_for_topic<test_msgs::msg::Strings>(topic_name);
++  EXPECT_THAT(msgs, SizeIs(Eq(expected_count)));
++  for (const auto & m : msgs) {
++    EXPECT_EQ(m->string_value, "time_only");
++  }
++}
++
++TEST_P(RecordFixture, record_with_max_cache_duration_and_size_e2e) {
++  const char * topic_name = "/e2e_dual_bounded_cache";
++  auto message = get_messages_strings()[0];
++  message->string_value = "dual_bounded";
++  size_t expected_count = 25;
++
++  rosbag2_test_common::PublicationManager pub_manager;
++  pub_manager.setup_publisher(topic_name, message, expected_count);
++
++  // Both bounds: --max-cache-size 1000 --max-cache-duration 3
++  std::stringstream cmd;
++  cmd << get_base_record_command()
++      << " --topics " << topic_name
++      << " --max-cache-size 1000"
++      << " --max-cache-duration 3";
++
++  auto process_handle = start_execution(cmd.str());
++  auto cleanup = rcpputils::make_scope_exit([&]() {stop_execution(process_handle);});
++
++  ASSERT_TRUE(pub_manager.wait_for_matched(topic_name)) << "Expected rosbag subscription";
++  wait_for_storage_file();
++
++  pub_manager.run_publishers();
++
++  stop_execution(process_handle);
++  cleanup.cancel();
++
++  finalize_metadata_kludge();
++  wait_for_metadata();
++
++  auto msgs = get_messages_for_topic<test_msgs::msg::Strings>(topic_name);
++  EXPECT_THAT(msgs, SizeIs(Eq(expected_count)));
++  for (const auto & m : msgs) {
++    EXPECT_EQ(m->string_value, "dual_bounded");
++  }
++}
++
+ INSTANTIATE_TEST_SUITE_P(
+   TestRecordEndToEnd,
+   RecordFixture,
+diff --git a/rosbag2_transport/src/rosbag2_transport/config_options_from_node_params.cpp b/rosbag2_transport/src/rosbag2_transport/config_options_from_node_params.cpp
+index 09979c66..ef5185f3 100644
+--- a/rosbag2_transport/src/rosbag2_transport/config_options_from_node_params.cpp
++++ b/rosbag2_transport/src/rosbag2_transport/config_options_from_node_params.cpp
+@@ -425,6 +425,10 @@ get_storage_options_from_node_params(rclcpp::Node & node)
+     node, "storage.max_cache_size", 0,
+     std::numeric_limits<int64_t>::max(), 100 * 1024 * 1024);
+ 
++  storage_options.max_cache_duration = param_utils::declare_integer_node_params<uint32_t>(
++    node, "storage.max_cache_duration", 0,
++    std::numeric_limits<uint32_t>::max(), storage_options.max_cache_duration);
++
+   storage_options.storage_preset_profile =
+     node.declare_parameter<std::string>("storage.storage_preset_profile", "");
+ 
+diff --git a/rosbag2_transport/test/resources/player_node_params.yaml b/rosbag2_transport/test/resources/player_node_params.yaml
+index f27cef28..ddc74dac 100644
+--- a/rosbag2_transport/test/resources/player_node_params.yaml
++++ b/rosbag2_transport/test/resources/player_node_params.yaml
+@@ -53,6 +53,7 @@ player_params_node:
+       max_bagfile_size: 12345
+       max_bagfile_duration: 54321
+       max_cache_size: 9898
++      max_cache_duration: 30
+       storage_preset_profile: "resilient"
+       snapshot_mode: false
+-      custom_data: ["key1=value1", "key2=value2"]
+\ No newline at end of file
++      custom_data: ["key1=value1", "key2=value2"]
+diff --git a/rosbag2_transport/test/resources/recorder_node_params.yaml b/rosbag2_transport/test/resources/recorder_node_params.yaml
+index b8ff0e4c..80c9ee99 100644
+--- a/rosbag2_transport/test/resources/recorder_node_params.yaml
++++ b/rosbag2_transport/test/resources/recorder_node_params.yaml
+@@ -44,6 +44,7 @@ recorder_params_node:
+       max_bagfile_size: 2147483646
+       max_bagfile_duration: 2147483646
+       max_cache_size: 989888
++      max_cache_duration: 30
+       storage_preset_profile: "none"
+       snapshot_mode: false
+       custom_data: ["key1=value1", "key2=value2"]
+diff --git a/rosbag2_transport/test/rosbag2_transport/test_composable_player.cpp b/rosbag2_transport/test/rosbag2_transport/test_composable_player.cpp
+index fc4d525a..0d01a715 100644
+--- a/rosbag2_transport/test/rosbag2_transport/test_composable_player.cpp
++++ b/rosbag2_transport/test/rosbag2_transport/test_composable_player.cpp
+@@ -196,6 +196,7 @@ TEST_P(ComposablePlayerTests, player_can_parse_parameters_from_file) {
+   EXPECT_EQ(storage_options[0].max_bagfile_size, 12345);
+   EXPECT_EQ(storage_options[0].max_bagfile_duration, 54321);
+   EXPECT_EQ(storage_options[0].max_cache_size, 9898);
++  EXPECT_EQ(storage_options[0].max_cache_duration, 30);
+   EXPECT_EQ(storage_options[0].storage_preset_profile, "resilient");
+   EXPECT_EQ(storage_options[0].snapshot_mode, false);
+   std::unordered_map<std::string, std::string> custom_data{
+diff --git a/rosbag2_transport/test/rosbag2_transport/test_composable_recorder.cpp b/rosbag2_transport/test/rosbag2_transport/test_composable_recorder.cpp
+index abeec933..519e14a8 100644
+--- a/rosbag2_transport/test/rosbag2_transport/test_composable_recorder.cpp
++++ b/rosbag2_transport/test/rosbag2_transport/test_composable_recorder.cpp
+@@ -257,6 +257,7 @@ TEST_P(ComposableRecorderTests, recorder_can_parse_parameters_from_file) {
+   EXPECT_EQ(storage_options.max_bagfile_size, 2147483646);
+   EXPECT_EQ(storage_options.max_bagfile_duration, 2147483646);
+   EXPECT_EQ(storage_options.max_cache_size, 989888);
++  EXPECT_EQ(storage_options.max_cache_duration, 30);
+   EXPECT_EQ(storage_options.storage_preset_profile, "none");
+   EXPECT_EQ(storage_options.snapshot_mode, false);
+   std::unordered_map<std::string, std::string> custom_data{

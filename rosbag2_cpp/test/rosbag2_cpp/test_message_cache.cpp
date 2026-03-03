@@ -23,6 +23,8 @@
 #include <vector>
 #include <thread>
 
+#include "rcutils/time.h"
+#include "rosbag2_cpp/cache/message_cache_buffer.hpp"
 #include "rosbag2_storage/ros_helper.hpp"
 #include "rosbag2_storage/serialized_bag_message.hpp"
 
@@ -30,18 +32,24 @@
 #include "mock_message_cache.hpp"
 
 using namespace testing;  // NOLINT
+using namespace std::chrono_literals;
 
 namespace
 {
-std::shared_ptr<rosbag2_storage::SerializedBagMessage> make_test_msg()
+// Helper to construct a test message with given timestamp and content.
+std::shared_ptr<rosbag2_storage::SerializedBagMessage> make_test_msg(
+  const rcutils_time_point_value_t timestamp_ns = 0,
+  const std::string & content = "")
 {
   static uint32_t counter = 0;
-  std::string msg_content = "Hello" + std::to_string(counter++);
-  auto msg_length = msg_content.length();
+  // Fallback to a default unique message if no content provided
+  std::string msg_content = (content.empty()) ? "Hello" + std::to_string(counter++) : content;
+
   auto message = std::make_shared<rosbag2_storage::SerializedBagMessage>();
   message->topic_name = "test_topic";
-  message->serialized_data = rosbag2_storage::make_serialized_message(
-    msg_content.c_str(), msg_length);
+  message->time_stamp = timestamp_ns;
+  message->serialized_data =
+    rosbag2_storage::make_serialized_message(msg_content.c_str(), msg_content.length());
   return message;
 }
 
@@ -61,7 +69,7 @@ uint32_t sum_up(const std::unordered_map<std::string, uint32_t> & map)
 class MessageCacheTest : public Test
 {
 public:
-  MessageCacheTest() {}
+  MessageCacheTest() = default;
 
   virtual ~MessageCacheTest() = default;
 
@@ -99,9 +107,76 @@ TEST_F(MessageCacheTest, message_cache_writes_full_producer_buffer) {
     mock_message_cache,
     cb);
 
-  using namespace std::chrono_literals;
   std::this_thread::sleep_for(20ms);
 
   mock_cache_consumer->stop();
   EXPECT_EQ(consumed_message_count, message_count - should_be_dropped_count);
+}
+
+TEST_F(MessageCacheTest, message_cache_handles_null_message) {
+  auto message_cache = std::make_shared<rosbag2_cpp::cache::MessageCache>(500);
+
+  // Should not throw when pushing null message
+  ASSERT_NO_THROW(message_cache->push(nullptr));
+
+  // Test message with null serialized data
+  auto msg = make_test_msg();
+  msg->serialized_data = nullptr;
+  ASSERT_NO_THROW(message_cache->push(msg));
+}
+
+TEST_F(MessageCacheTest, constructor_throws_if_both_limits_are_zero) {
+  EXPECT_THROW(rosbag2_cpp::cache::MessageCache(0, 0), std::invalid_argument);
+}
+
+TEST_F(MessageCacheTest, message_cache_buffer_time_only_limits_by_duration) {
+  // Buffer with time bound only: 2 seconds, size unlimited (0)
+  constexpr uint32_t max_duration_sec = 2;
+  constexpr size_t max_buffer_size = 0;
+
+  auto message_cache = rosbag2_cpp::cache::MessageCache(max_buffer_size, max_duration_sec);
+
+  const auto base = 10s;
+  const auto messages_interval = 500ms;
+  constexpr size_t total_message_count = 10;  // 5 seconds total
+  // Expected 5 messages in buffer (2 seconds / 500ms + 1)
+  const size_t expected_msgs = std::chrono::seconds(max_duration_sec) / messages_interval + 1;
+  ASSERT_LT(expected_msgs, total_message_count);
+
+  // Push expected_msgs messages (should all be accepted)
+  for (size_t i = 0; i < expected_msgs; i++) {
+    const auto ts = base + (i * messages_interval);
+    auto msg = make_test_msg(
+      static_cast<rcutils_time_point_value_t>(
+        std::chrono::duration_cast<std::chrono::nanoseconds>(ts).count()));
+    message_cache.push(msg);
+  }
+
+  // Push remaining messages (will be dropped due to time limit)
+  const size_t drop_msgs_start_index = expected_msgs;
+  for (size_t i = drop_msgs_start_index; i < total_message_count; i++) {
+    const auto ts = base + (i * messages_interval);
+    auto msg = make_test_msg(
+      static_cast<rcutils_time_point_value_t>(
+        std::chrono::duration_cast<std::chrono::nanoseconds>(ts).count()));
+    message_cache.push(msg);
+  }
+
+  message_cache.notify_data_ready();
+  message_cache.swap_buffers();
+
+  auto consumer_buffer = message_cache.get_consumer_buffer();
+  auto messages = consumer_buffer->data();
+  message_cache.release_consumer_buffer();
+
+  // Verify we have the expected number of messages
+  ASSERT_EQ(messages.size(), expected_msgs);
+
+  // Verify all messages are within the time window
+  for (const auto & msg : messages) {
+    EXPECT_GE(
+      msg->time_stamp,
+      static_cast<rcutils_time_point_value_t>(
+        std::chrono::duration_cast<std::chrono::nanoseconds>(base).count()));
+  }
 }
