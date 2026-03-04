@@ -377,13 +377,13 @@ void SequentialWriter::write(std::shared_ptr<rosbag2_storage::SerializedBagMessa
   auto converted_msg = get_writeable_message(message);
 
   metadata_.files.back().message_count++;
-  if (storage_options_.max_cache_size == 0u) {
-    // If cache size is set to zero, we write to storage directly
+  if (use_cache_) {
+    // Use cache buffer
+    message_cache_->push(converted_msg);
+  } else {
+    // If cache is not enabled, write to storage directly
     storage_->write(converted_msg);
     ++topic_information->message_count;
-  } else {
-    // Otherwise, use cache buffer
-    message_cache_->push(converted_msg);
   }
 }
 
