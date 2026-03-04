@@ -8,15 +8,18 @@ set -e  # 遇到错误立即退出
 
 # 显示帮助信息
 show_help() {
-    echo "用法: $0 <src_relative_path>"
+    echo "用法: $0 <src_relative_path> [package_name]"
     echo ""
     echo "参数:"
     echo "  src_relative_path    源码根目录的相对路径（相对于当前工作空间）"
+    echo "  package_name         (可选) 指定要打包的单个功能包名称"
+    echo "                       如果不指定，则打包所有功能包"
     echo ""
     echo "示例:"
     echo "  cd ~/pix/test/ros2_ws"
-    echo "  $0 src/rosbag2"
-    echo "  $0 src"
+    echo "  $0 src/rosbag2                    # 打包所有功能包"
+    echo "  $0 src/rosbag2 rosbag2_cpp        # 只打包 rosbag2_cpp"
+    echo "  $0 src rosbag2_cpp                # 从 src 目录中只打包 rosbag2_cpp"
     exit 1
 }
 
@@ -34,6 +37,12 @@ INSTALL_DIR="$WORKSPACE_DIR/install"
 DEB_OUTPUT_DIR="$WORKSPACE_DIR/deb_packages"
 BUILD_PREFIX="pix$(date +%Y%m%d)-"
 ROS_DISTRO="humble"
+
+# 可选的指定包名
+SPECIFIC_PACKAGE=""
+if [ $# -ge 2 ]; then
+    SPECIFIC_PACKAGE="$2"
+fi
 
 # 验证源码目录存在
 if [ ! -d "$SRC_DIR" ]; then
@@ -187,6 +196,11 @@ echo "源码根目录: $SRC_DIR (相对路径: $SRC_RELATIVE_PATH)"
 echo "输出目录: $DEB_OUTPUT_DIR"
 echo "构建前缀: $BUILD_PREFIX"
 echo "ROS Distro: $ROS_DISTRO"
+if [ -n "$SPECIFIC_PACKAGE" ]; then
+    echo "指定打包: $SPECIFIC_PACKAGE (仅打包此功能包)"
+else
+    echo "打包范围: 所有功能包"
+fi
 echo "========================================"
 echo ""
 
@@ -208,6 +222,45 @@ cd "$WORKSPACE_DIR"
 if [ -f "$INSTALL_DIR/setup.bash" ]; then
     echo "[环境] source $INSTALL_DIR/setup.bash"
     source "$INSTALL_DIR/setup.bash"
+fi
+
+# 记录本次脚本安装的包
+INSTALLED_PACKAGES=()
+
+# 如果指定了特定包，直接打包该包
+if [ -n "$SPECIFIC_PACKAGE" ]; then
+    echo "[信息] 指定打包单个功能包: $SPECIFIC_PACKAGE"
+    
+    # 检查包目录是否存在
+    if [ ! -d "$SRC_DIR/$SPECIFIC_PACKAGE" ]; then
+        echo "[错误] 指定的功能包不存在: $SRC_DIR/$SPECIFIC_PACKAGE"
+        exit 1
+    fi
+    
+    # 检查是否有 package.xml
+    if [ ! -f "$SRC_DIR/$SPECIFIC_PACKAGE/package.xml" ]; then
+        echo "[错误] 指定的目录不是有效的 ROS 包（缺少 package.xml）: $SRC_DIR/$SPECIFIC_PACKAGE"
+        exit 1
+    fi
+    
+    echo ""
+    if ! build_deb_package "$SPECIFIC_PACKAGE"; then
+        echo "[错误] 打包 $SPECIFIC_PACKAGE 失败，脚本终止"
+        exit 1
+    fi
+    
+    echo "========================================"
+    echo "指定功能包打包完成！"
+    echo "输出目录: $DEB_OUTPUT_DIR"
+    echo "生成的包列表:"
+    ls -lh "$DEB_OUTPUT_DIR/"
+    echo ""
+    echo "已安装的功能包:"
+    for pkg in "${INSTALLED_PACKAGES[@]}"; do
+        dpkg -l | grep "^ii  $pkg " | awk '{printf "  %-40s %s\n", $2, $3}'
+    done
+    echo "========================================"
+    exit 0
 fi
 
 # 从 colcon graph 提取包列表（按依赖顺序，从上到下）
@@ -256,9 +309,6 @@ echo ""
 # 统计
 TOTAL=${#PACKAGES[@]}
 CURRENT=0
-
-# 记录本次脚本安装的包
-INSTALLED_PACKAGES=()
 
 # 打包所有包
 for pkg in "${PACKAGES[@]}"; do
