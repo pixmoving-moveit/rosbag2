@@ -6,6 +6,34 @@
 
 set -e  # 遇到错误立即退出
 
+# 检查并安装必要的依赖包
+check_and_install_deps() {
+    local deps=("python3-bloom" "python3-rosdep" "fakeroot" "debhelper" "dh-python")
+    local missing_deps=()
+    
+    echo "[检查] 检查必要的依赖包..."
+    
+    for dep in "${deps[@]}"; do
+        if ! dpkg -l | grep -q "^ii  $dep "; then
+            missing_deps+=("$dep")
+        fi
+    done
+    
+    if [ ${#missing_deps[@]} -gt 0 ]; then
+        echo "[安装] 发现缺失的依赖包: ${missing_deps[*]}"
+        echo "[安装] 正在安装依赖..."
+        sudo apt update
+        sudo apt install -y "${missing_deps[@]}"
+        echo "[安装] 依赖安装完成"
+    else
+        echo "[检查] 所有依赖包已安装"
+    fi
+    echo ""
+}
+
+# 执行依赖检查
+check_and_install_deps
+
 # 显示帮助信息
 show_help() {
     echo "用法: $0 <src_relative_path> [package_name]"
