@@ -17,6 +17,7 @@
 
 #include <atomic>
 #include <condition_variable>
+#include <cstdint>
 #include <memory>
 #include <mutex>
 #include <string>
@@ -52,7 +53,7 @@ class ROSBAG2_CPP_PUBLIC CircularMessageCache
   : public MessageCacheInterface
 {
 public:
-  explicit CircularMessageCache(size_t max_buffer_size);
+  explicit CircularMessageCache(size_t max_buffer_size, uint32_t max_buffer_duration = 0);
 
   ~CircularMessageCache() override;
 

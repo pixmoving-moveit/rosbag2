@@ -17,6 +17,7 @@
 
 #include <gmock/gmock.h>
 
+#include <cstdint>
 #include <memory>
 #include <string>
 #include <unordered_map>
@@ -27,8 +28,8 @@
 class MockMessageCache : public rosbag2_cpp::cache::MessageCache
 {
 public:
-  explicit MockMessageCache(uint64_t max_buffer_size)
-  : rosbag2_cpp::cache::MessageCache(max_buffer_size) {}
+  explicit MockMessageCache(uint64_t max_buffer_size, uint32_t max_buffer_duration = 0)
+  : rosbag2_cpp::cache::MessageCache(max_buffer_size, max_buffer_duration) {}
 
   std::unordered_map<std::string, uint32_t> messages_dropped() const
   {

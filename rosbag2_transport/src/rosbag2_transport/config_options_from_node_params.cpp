@@ -12,6 +12,8 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
+#include <cstdint>
+#include <limits>
 #include <string>
 #include <vector>
 
@@ -369,6 +371,10 @@ get_storage_options_from_node_params(rclcpp::Node & node)
   storage_options.max_cache_size = param_utils::declare_integer_node_params<uint64_t>(
     node, "storage.max_cache_size", 0,
     std::numeric_limits<int64_t>::max(), 100 * 1024 * 1024);
+
+  storage_options.max_cache_duration = param_utils::declare_integer_node_params<uint32_t>(
+    node, "storage.max_cache_duration", 0,
+    std::numeric_limits<uint32_t>::max(), storage_options.max_cache_duration);
 
   storage_options.storage_preset_profile =
     node.declare_parameter<std::string>("storage.storage_preset_profile", "");

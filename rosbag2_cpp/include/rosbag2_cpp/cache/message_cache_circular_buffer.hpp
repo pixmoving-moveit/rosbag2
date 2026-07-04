@@ -15,6 +15,7 @@
 #ifndef ROSBAG2_CPP__CACHE__MESSAGE_CACHE_CIRCULAR_BUFFER_HPP_
 #define ROSBAG2_CPP__CACHE__MESSAGE_CACHE_CIRCULAR_BUFFER_HPP_
 
+#include <cstdint>
 #include <deque>
 #include <memory>
 #include <vector>
@@ -38,20 +39,20 @@ namespace cache
 
 /**
 * This class implements a circular buffer message cache. Since the buffer
-* size is limited by total byte size of the storage messages rather than
-* a fix number of messages, a deque is used instead of a vector since
+* size is limited by total byte size and/or duration of the stored messages rather than
+* a fixed number of messages, a deque is used instead of a vector since
 * older messages can always be dropped from the front and new messages added
-* to the end. The buffer will never consume more than max_cache_size bytes,
-* and will log a warning message if an individual message exceeds the buffer
-* size.
+* to the end. The buffer will never consume more than max_cache_size bytes when the
+* size limit is non-zero, and will log a warning message if an individual message exceeds
+* the buffer size.
 */
 class ROSBAG2_CPP_PUBLIC MessageCacheCircularBuffer
   : public CacheBufferInterface
 {
 public:
-  // Delete default constructor since max_cache_size is required
+  // Delete default constructor since at least one cache bound is required
   MessageCacheCircularBuffer() = delete;
-  explicit MessageCacheCircularBuffer(size_t max_cache_size);
+  explicit MessageCacheCircularBuffer(size_t max_cache_size, uint32_t max_cache_duration = 0);
 
   /**
   * \brief Pushes a SerializedBagMessage into the cache buffer.
@@ -77,6 +78,7 @@ private:
   std::vector<CacheBufferInterface::buffer_element_t> msg_vector_;
   size_t buffer_bytes_size_ {0u};
   const size_t max_bytes_size_;
+  const uint64_t max_cache_duration_ns_;
 };
 
 }  // namespace cache

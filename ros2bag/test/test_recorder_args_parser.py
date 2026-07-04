@@ -134,6 +134,68 @@ def test_recorder_custom_data_list_argument(test_arguments_parser):
     assert output_path.as_posix() == args.output
 
 
+def test_recorder_max_cache_duration_argument(test_arguments_parser):
+    """Test recorder --max-cache-duration argument parser."""
+    output_path = RESOURCES_PATH / 'ros2bag_tmp_file'
+    args = test_arguments_parser.parse_args(
+        ['--all', '--max-cache-duration', '10', '--output', output_path.as_posix()]
+    )
+    assert args.max_cache_duration == 10
+    assert output_path.as_posix() == args.output
+
+
+def assert_validation_error_contains(args, expected_output):
+    uri = args.output or datetime.datetime.now().strftime('rosbag2_%Y_%m_%d-%H_%M_%S')
+    error_str = validate_parsed_arguments(args, uri)
+    assert error_str is not None
+    matches = expected_output in error_str
+    assert matches, ERROR_STRING_MSG.format(expected_output, error_str)
+
+
+def test_recorder_validate_negative_max_cache_size(test_arguments_parser):
+    output_path = RESOURCES_PATH / 'ros2bag_tmp_file'
+    args = test_arguments_parser.parse_args(
+        ['--all', '--max-cache-size', '-1', '--output', output_path.as_posix()]
+    )
+    assert_validation_error_contains(args, 'max_cache_size must be a non-negative integer.')
+
+
+def test_recorder_validate_max_cache_size_accepts_uint64_values(test_arguments_parser):
+    output_path = RESOURCES_PATH / 'ros2bag_tmp_file'
+    args = test_arguments_parser.parse_args(
+        ['--all', '--max-cache-size', '4294967296', '--output', output_path.as_posix()]
+    )
+    assert validate_parsed_arguments(args, args.output) is None
+
+
+def test_recorder_validate_negative_max_cache_duration(test_arguments_parser):
+    output_path = RESOURCES_PATH / 'ros2bag_tmp_file'
+    args = test_arguments_parser.parse_args(
+        ['--all', '--max-cache-duration', '-1', '--output', output_path.as_posix()]
+    )
+    assert_validation_error_contains(args, 'max_cache_duration must be a non-negative integer.')
+
+
+def test_recorder_validate_max_cache_duration_uint32_limit(test_arguments_parser):
+    output_path = RESOURCES_PATH / 'ros2bag_tmp_file'
+    args = test_arguments_parser.parse_args(
+        ['--all', '--max-cache-duration', '4294967296', '--output', output_path.as_posix()]
+    )
+    assert_validation_error_contains(args, 'max_cache_duration must not exceed 4294967295 seconds')
+
+
+def test_recorder_validate_snapshot_mode_needs_cache_limit(test_arguments_parser):
+    output_path = RESOURCES_PATH / 'ros2bag_tmp_file'
+    args = test_arguments_parser.parse_args(
+        ['--all', '--snapshot-mode', '--max-cache-size', '0', '--max-cache-duration', '0',
+         '--output', output_path.as_posix()]
+    )
+    assert_validation_error_contains(
+        args,
+        'In snapshot mode, either the max_cache_duration or max_cache_size '
+        'shall not be set to zero.')
+
+
 def test_recorder_validate_exclude_regex_needs_inclusive_args(test_arguments_parser):
     """Test that --exclude-regex needs inclusive arguments."""
     output_path = RESOURCES_PATH / 'ros2bag_tmp_file'
@@ -148,13 +210,10 @@ def test_recorder_validate_exclude_regex_needs_inclusive_args(test_arguments_par
     assert args.all_services is False
     assert '' == args.regex
 
-    uri = args.output or datetime.datetime.now().strftime('rosbag2_%Y_%m_%d-%H_%M_%S')
-    error_str = validate_parsed_arguments(args, uri)
-    assert error_str is not None
-    expected_output = '--exclude-regex argument requires either --all, ' \
-                      '--all-topics, --topic-types, --all-services or --regex'
-    matches = expected_output in error_str
-    assert matches, ERROR_STRING_MSG.format(expected_output, error_str)
+    assert_validation_error_contains(
+        args,
+        '--exclude-regex argument requires either --all, '
+        '--all-topics, --topic-types, --all-services or --regex')
 
 
 def test_recorder_validate_exclude_topics_needs_inclusive_args(test_arguments_parser):
@@ -172,13 +231,10 @@ def test_recorder_validate_exclude_topics_needs_inclusive_args(test_arguments_pa
     assert '' == args.regex
     assert '' == args.exclude_regex
 
-    uri = args.output or datetime.datetime.now().strftime('rosbag2_%Y_%m_%d-%H_%M_%S')
-    error_str = validate_parsed_arguments(args, uri)
-    assert error_str is not None
-    expected_output = '--exclude-topics argument requires either --all, --all-topics, ' \
-                      '--topic-types or --regex'
-    matches = expected_output in error_str
-    assert matches, ERROR_STRING_MSG.format(expected_output, error_str)
+    assert_validation_error_contains(
+        args,
+        '--exclude-topics argument requires either --all, --all-topics, '
+        '--topic-types or --regex')
 
 
 def test_recorder_validate_exclude_topics_types_needs_inclusive_args(test_arguments_parser):
@@ -196,13 +252,10 @@ def test_recorder_validate_exclude_topics_types_needs_inclusive_args(test_argume
     assert '' == args.regex
     assert '' == args.exclude_regex
 
-    uri = args.output or datetime.datetime.now().strftime('rosbag2_%Y_%m_%d-%H_%M_%S')
-    error_str = validate_parsed_arguments(args, uri)
-    assert error_str is not None
-    expected_output = '--exclude-topic-types argument requires either --all, ' \
-                      '--all-topics or --regex'
-    matches = expected_output in error_str
-    assert matches, ERROR_STRING_MSG.format(expected_output, error_str)
+    assert_validation_error_contains(
+        args,
+        '--exclude-topic-types argument requires either --all, '
+        '--all-topics or --regex')
 
 
 def test_recorder_validate_exclude_services_needs_inclusive_args(test_arguments_parser):
@@ -220,10 +273,6 @@ def test_recorder_validate_exclude_services_needs_inclusive_args(test_arguments_
     assert '' == args.regex
     assert '' == args.exclude_regex
 
-    uri = args.output or datetime.datetime.now().strftime('rosbag2_%Y_%m_%d-%H_%M_%S')
-    error_str = validate_parsed_arguments(args, uri)
-    assert error_str is not None
-    expected_output = '--exclude-services argument requires either --all, --all-services '
-    'or --regex'
-    matches = expected_output in error_str
-    assert matches, ERROR_STRING_MSG.format(expected_output, error_str)
+    assert_validation_error_contains(
+        args,
+        '--exclude-services argument requires either --all, --all-services or --regex')

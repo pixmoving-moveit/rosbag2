@@ -52,6 +52,15 @@ class TestStorageStructs(unittest.TestCase):
         storage_options = StorageOptions(uri='path')
         assert storage_options
 
+    def test_storage_options_ctor_max_cache_duration(self):
+        storage_options = StorageOptions(uri='path', max_cache_duration=10)
+        assert storage_options.max_cache_duration == 10
+
+    def test_storage_options_ctor_old_positional_args(self):
+        storage_options = StorageOptions('path', '', 0, 0, 0, '', '', False, -1, -1, {})
+        assert storage_options.uri == 'path'
+        assert storage_options.max_cache_duration == 0
+
     def test_storage_filter_ctor(self):
         storage_filter = StorageFilter()
         assert storage_filter

@@ -41,8 +41,12 @@ public:
 
   // The cache size indiciates how many messages can maximally be hold in cache
   // before these being written to disk.
-  // A value of 0 disables caching and every write happens directly to disk.
+  // A value of 0 disables size-limited caching.
   uint64_t max_cache_size = 0;
+
+  // The maximum duration of messages to hold in cache, in seconds.
+  // A value of 0 disables duration-limited caching.
+  uint32_t max_cache_duration = 0;
 
   // Preset storage configuration. Preset settings can be overriden with
   // corresponding settings specified through storage_config_uri file

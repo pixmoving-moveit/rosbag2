@@ -622,6 +622,53 @@ TEST_F(SequentialWriterTest, snapshot_mode_zero_cache_size_throws_exception)
   EXPECT_THROW(writer_->open(storage_options_, {rmw_format, rmw_format}), std::runtime_error);
 }
 
+TEST_F(SequentialWriterTest, snapshot_mode_duration_only_uses_cache)
+{
+  storage_options_.max_bagfile_size = 0;
+  storage_options_.max_cache_size = 0;
+  storage_options_.max_cache_duration = 10;
+  storage_options_.snapshot_mode = true;
+
+  EXPECT_CALL(*storage_, write(An<std::shared_ptr<const rosbag2_storage::SerializedBagMessage>>()))
+  .Times(0);
+  EXPECT_CALL(
+    *storage_, write(
+      An<const std::vector<std::shared_ptr<const rosbag2_storage::SerializedBagMessage>> &>()))
+  .Times(1);
+
+  auto sequential_writer = std::make_unique<rosbag2_cpp::writers::SequentialWriter>(
+    std::move(storage_factory_), converter_factory_, std::move(metadata_io_));
+  writer_ = std::make_unique<rosbag2_cpp::Writer>(std::move(sequential_writer));
+
+  std::string rmw_format = "rmw_format";
+
+  std::string msg_content = "Hello";
+  auto message = std::make_shared<rosbag2_storage::SerializedBagMessage>();
+  message->topic_name = "test_topic";
+  message->serialized_data = rosbag2_storage::make_serialized_message(
+    msg_content.c_str(), msg_content.length());
+
+  writer_->open(storage_options_, {rmw_format, rmw_format});
+  writer_->create_topic({0u, "test_topic", "test_msgs/BasicTypes", "", {}, ""});
+  writer_->write(message);
+  writer_->take_snapshot();
+}
+
+TEST_F(SequentialWriterTest, snapshot_mode_without_any_cache_limit_throws_exception)
+{
+  storage_options_.max_bagfile_size = 0;
+  storage_options_.max_cache_size = 0;
+  storage_options_.max_cache_duration = 0;
+  storage_options_.snapshot_mode = true;
+
+  auto sequential_writer = std::make_unique<rosbag2_cpp::writers::SequentialWriter>(
+    std::move(storage_factory_), converter_factory_, std::move(metadata_io_));
+  writer_ = std::make_unique<rosbag2_cpp::Writer>(std::move(sequential_writer));
+
+  std::string rmw_format = "rmw_format";
+  EXPECT_THROW(writer_->open(storage_options_, {rmw_format, rmw_format}), std::runtime_error);
+}
+
 TEST_F(SequentialWriterTest, snapshot_writes_to_new_file_with_bag_split)
 {
   storage_options_.max_bagfile_size = 0;

@@ -155,7 +155,15 @@ def add_recorder_arguments(parser: ArgumentParser) -> None:
              'which means that in pessimistic case up to twice the parameter value of memory '
              'is needed. A rule of thumb is to cache an order of magnitude corresponding to '
              'about one second of total recorded data volume. '
-             'If the value specified is 0, then every message is directly written to disk.')
+             'If the value specified is 0, cache is disabled unless --max-cache-duration '
+             'is set, in which case buffering is limited by duration only.')
+    parser.add_argument(
+        '--max-cache-duration', type=int, default=0,
+        help='Maximum cache duration in seconds. '
+             'Default: %(default)d, indicates that buffering will be limited by the '
+             '--max-cache-size parameter only. If the value is more than 0, the cache buffer '
+             'will be limited by both the message sequence duration and maximum cache size. '
+             'To disable the cache size limit, set --max-cache-size to 0.')
     parser.add_argument(
         '--disable-keyboard-controls', action='store_true', default=False,
         help='disables keyboard controls for recorder')
@@ -285,6 +293,20 @@ def validate_parsed_arguments(args, uri) -> str:
     if args.compression_queue_size < 0:
         return print_error('Compression queue size must be at least 0.')
 
+    if args.max_cache_size < 0:
+        return print_error('max_cache_size must be a non-negative integer.')
+
+    if args.max_cache_duration < 0:
+        return print_error('max_cache_duration must be a non-negative integer.')
+
+    if args.max_cache_duration > 4294967295:
+        return print_error('max_cache_duration must not exceed 4294967295 seconds '
+                           '(~136 years, uint32_t max).')
+
+    if args.snapshot_mode and args.max_cache_duration == 0 and args.max_cache_size == 0:
+        return print_error('In snapshot mode, either the max_cache_duration or max_cache_size '
+                           'shall not be set to zero.')
+
 
 # Create termination event
 termination_requested = threading.Event()
@@ -334,6 +356,7 @@ class RecordVerb(VerbExtension):
             max_bagfile_size=args.max_bag_size,
             max_bagfile_duration=args.max_bag_duration,
             max_cache_size=args.max_cache_size,
+            max_cache_duration=args.max_cache_duration,
             storage_preset_profile=args.storage_preset_profile,
             storage_config_uri=storage_config_file,
             snapshot_mode=args.snapshot_mode,

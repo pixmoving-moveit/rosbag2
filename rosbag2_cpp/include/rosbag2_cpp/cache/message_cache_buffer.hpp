@@ -16,6 +16,7 @@
 #define ROSBAG2_CPP__CACHE__MESSAGE_CACHE_BUFFER_HPP_
 
 #include <atomic>
+#include <cstdint>
 #include <memory>
 #include <vector>
 
@@ -36,11 +37,9 @@ namespace rosbag2_cpp
 namespace cache
 {
 /**
-* This class implements a single buffer for message cache. The buffer is byte size
-* limited and won't accept any messages when current buffer byte size is already
-* over the limit set by max_cache_size. This means that buffer can at times use
-* more memory than max_cache_size, but never by more than a single message. When
-* the buffer is full, the next incoming message is dropped.
+* This class implements a single buffer for message cache. The buffer can be limited
+* by byte size and/or by the duration of messages stored in the buffer. If both limits
+* are set, the next incoming message is dropped when either limit would be exceeded.
 *
 * Note that it could be reused as a template with any class that has
 * ->byte_size() - like interface
@@ -49,7 +48,7 @@ class ROSBAG2_CPP_PUBLIC MessageCacheBuffer
   : public CacheBufferInterface
 {
 public:
-  explicit MessageCacheBuffer(size_t max_cache_size);
+  explicit MessageCacheBuffer(size_t max_cache_size, uint32_t max_cache_duration = 0);
 
   /**
   * If buffer size got some space left, we push message regardless of its size, but if
@@ -71,6 +70,7 @@ private:
   std::vector<CacheBufferInterface::buffer_element_t> buffer_;
   size_t buffer_bytes_size_ {0u};
   const size_t max_bytes_size_;
+  const uint64_t max_cache_duration_ns_;
 
   /// set when buffer is full and should drop messages instead of inserting them
   std::atomic_bool drop_messages_ {false};

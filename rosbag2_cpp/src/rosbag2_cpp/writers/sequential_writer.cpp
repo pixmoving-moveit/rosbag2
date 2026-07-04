@@ -149,19 +149,20 @@ void SequentialWriter::open(
     throw std::runtime_error{error.str()};
   }
 
-  use_cache_ = storage_options.max_cache_size > 0u;
+  use_cache_ = storage_options.max_cache_size > 0u || storage_options.max_cache_duration > 0u;
   if (storage_options.snapshot_mode && !use_cache_) {
     throw std::runtime_error(
-            "Max cache size must be greater than 0 when snapshot mode is enabled");
+            "Either max cache size or max cache duration must be greater than 0 "
+            "when snapshot mode is enabled");
   }
 
   if (use_cache_) {
     if (storage_options.snapshot_mode) {
       message_cache_ = std::make_shared<rosbag2_cpp::cache::CircularMessageCache>(
-        storage_options.max_cache_size);
+        storage_options.max_cache_size, storage_options.max_cache_duration);
     } else {
       message_cache_ = std::make_shared<rosbag2_cpp::cache::MessageCache>(
-        storage_options.max_cache_size);
+        storage_options.max_cache_size, storage_options.max_cache_duration);
     }
     cache_consumer_ = std::make_unique<rosbag2_cpp::cache::CacheConsumer>(
       message_cache_,
@@ -438,14 +439,14 @@ void SequentialWriter::write(std::shared_ptr<const rosbag2_storage::SerializedBa
 
   auto converted_msg = get_writeable_message(message);
 
-  if (storage_options_.max_cache_size == 0u) {
-    // If cache size is set to zero, we write to storage directly
+  if (use_cache_) {
+    // Use cache buffer
+    message_cache_->push(converted_msg);
+  } else {
+    // If cache is not enabled, write to storage directly
     storage_->write(converted_msg);
     metadata_.files.back().message_count++;
     topic_information_ptr->message_count++;
-  } else {
-    // Otherwise, use cache buffer
-    message_cache_->push(converted_msg);
   }
 }
 

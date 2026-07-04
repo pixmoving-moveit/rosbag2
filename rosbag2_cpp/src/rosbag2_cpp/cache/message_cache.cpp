@@ -28,10 +28,10 @@ namespace rosbag2_cpp
 namespace cache
 {
 
-MessageCache::MessageCache(size_t max_buffer_size)
+MessageCache::MessageCache(size_t max_buffer_size, uint32_t max_buffer_duration)
 {
-  producer_buffer_ = std::make_shared<MessageCacheBuffer>(max_buffer_size);
-  consumer_buffer_ = std::make_shared<MessageCacheBuffer>(max_buffer_size);
+  producer_buffer_ = std::make_shared<MessageCacheBuffer>(max_buffer_size, max_buffer_duration);
+  consumer_buffer_ = std::make_shared<MessageCacheBuffer>(max_buffer_size, max_buffer_duration);
 }
 
 MessageCache::~MessageCache()
@@ -46,6 +46,11 @@ MessageCache::~MessageCache()
 
 void MessageCache::push(std::shared_ptr<const rosbag2_storage::SerializedBagMessage> msg)
 {
+  if (!msg) {
+    ROSBAG2_CPP_LOG_ERROR("Attempted to push null message into cache. Dropping message!");
+    return;
+  }
+
   // While pushing, we keep track of inserted and dropped messages as well
   bool pushed = false;
   {
@@ -53,11 +58,11 @@ void MessageCache::push(std::shared_ptr<const rosbag2_storage::SerializedBagMess
     pushed = producer_buffer_->push(msg);
   }
 
-  if (!pushed) {
+  if (pushed) {
+    notify_data_ready();
+  } else {
     messages_dropped_per_topic_[msg->topic_name]++;
   }
-
-  notify_data_ready();
 }
 
 std::shared_ptr<CacheBufferInterface> MessageCache::get_consumer_buffer()

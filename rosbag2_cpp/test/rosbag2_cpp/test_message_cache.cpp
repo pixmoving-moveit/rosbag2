@@ -17,31 +17,38 @@
 #include <chrono>
 #include <numeric>
 #include <memory>
+#include <stdexcept>
 #include <string>
 #include <unordered_map>
 #include <utility>
 #include <vector>
 #include <thread>
 
+#include "rcutils/time.h"
 #include "rosbag2_storage/ros_helper.hpp"
 #include "rosbag2_storage/serialized_bag_message.hpp"
 
+#include "rosbag2_cpp/cache/message_cache.hpp"
 #include "mock_cache_consumer.hpp"
 #include "mock_message_cache.hpp"
 
 using namespace testing;  // NOLINT
+using namespace std::chrono_literals;
 
 namespace
 {
-std::shared_ptr<rosbag2_storage::SerializedBagMessage> make_test_msg()
+std::shared_ptr<rosbag2_storage::SerializedBagMessage> make_test_msg(
+  const rcutils_time_point_value_t recv_timestamp = 0,
+  const std::string & content = "")
 {
   static uint32_t counter = 0;
-  std::string msg_content = "Hello" + std::to_string(counter++);
-  auto msg_length = msg_content.length();
+  const std::string msg_content = content.empty() ? "Hello" + std::to_string(counter++) : content;
   auto message = std::make_shared<rosbag2_storage::SerializedBagMessage>();
   message->topic_name = "test_topic";
+  message->recv_timestamp = recv_timestamp;
+  message->send_timestamp = recv_timestamp;
   message->serialized_data = rosbag2_storage::make_serialized_message(
-    msg_content.c_str(), msg_length);
+    msg_content.c_str(), msg_content.length());
   return message;
 }
 
@@ -99,9 +106,57 @@ TEST_F(MessageCacheTest, message_cache_writes_full_producer_buffer) {
     mock_message_cache,
     cb);
 
-  using namespace std::chrono_literals;
   std::this_thread::sleep_for(20ms);
 
   mock_cache_consumer->stop();
   EXPECT_EQ(consumed_message_count, message_count - should_be_dropped_count);
+}
+
+TEST_F(MessageCacheTest, message_cache_rejects_null_message) {
+  auto message_cache = std::make_shared<rosbag2_cpp::cache::MessageCache>(500);
+
+  ASSERT_NO_THROW(message_cache->push(nullptr));
+
+  auto msg = make_test_msg();
+  msg->serialized_data = nullptr;
+  ASSERT_NO_THROW(message_cache->push(msg));
+}
+
+TEST_F(MessageCacheTest, constructor_throws_if_both_limits_are_zero) {
+  EXPECT_THROW(rosbag2_cpp::cache::MessageCache(0, 0), std::invalid_argument);
+}
+
+TEST_F(MessageCacheTest, message_cache_buffer_time_only_limits_by_duration) {
+  constexpr uint32_t max_duration_sec = 2;
+  auto message_cache = rosbag2_cpp::cache::MessageCache(
+    /*max_buffer_size=*/0, max_duration_sec);
+
+  const auto base = 10s;
+  const auto messages_interval = 500ms;
+  constexpr size_t total_message_count = 10;
+  const size_t expected_msgs = std::chrono::seconds(max_duration_sec) / messages_interval + 1;
+  ASSERT_LT(expected_msgs, total_message_count);
+
+  for (size_t i = 0; i < total_message_count; i++) {
+    const auto ts = base + (i * messages_interval);
+    auto msg = make_test_msg(
+      static_cast<rcutils_time_point_value_t>(
+        std::chrono::duration_cast<std::chrono::nanoseconds>(ts).count()));
+    message_cache.push(msg);
+  }
+
+  message_cache.swap_buffers();
+
+  auto consumer_buffer = message_cache.get_consumer_buffer();
+  auto messages = consumer_buffer->data();
+  message_cache.release_consumer_buffer();
+
+  ASSERT_EQ(messages.size(), expected_msgs);
+  EXPECT_EQ(
+    messages.front()->recv_timestamp,
+    static_cast<rcutils_time_point_value_t>(
+      std::chrono::duration_cast<std::chrono::nanoseconds>(base).count()));
+  EXPECT_LE(
+    messages.back()->recv_timestamp - messages.front()->recv_timestamp,
+    static_cast<rcutils_time_point_value_t>(RCUTILS_S_TO_NS(max_duration_sec)));
 }

@@ -17,6 +17,7 @@
 
 #include <atomic>
 #include <condition_variable>
+#include <cstdint>
 #include <unordered_map>
 #include <memory>
 #include <mutex>
@@ -71,7 +72,7 @@ class ROSBAG2_CPP_PUBLIC MessageCache
   : public MessageCacheInterface
 {
 public:
-  explicit MessageCache(size_t max_buffer_size);
+  explicit MessageCache(size_t max_buffer_size, uint32_t max_buffer_duration = 0);
 
   ~MessageCache() override;
 
